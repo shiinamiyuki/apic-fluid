@@ -2,7 +2,10 @@ use std::{cmp::Ordering, collections::HashMap};
 
 use parking_lot::RwLock;
 
-use crate::*;
+use crate::{
+    sparse::solver::{IdentityPreconditioner, PcgSolver, DiagJacobiPreconditioner},
+    *,
+};
 pub mod solver;
 
 #[derive(Clone, Copy)]
@@ -37,6 +40,7 @@ pub struct SparseKernels {
     device: Device,
     spmv: Kernel<(SparseMatrixData, Buffer<f32>, Buffer<f32>)>,
     spmv_sub: Kernel<(SparseMatrixData, Buffer<f32>, Buffer<f32>)>,
+    diag: Kernel<(SparseMatrixData, Buffer<f32>)>,
     vec_add_scaled: Kernel<(Buffer<f32>, Buffer<f32>, Buffer<f32>)>,
     zero: Kernel<(Buffer<f32>,)>,
 }
@@ -123,6 +127,7 @@ impl Vector {
     }
     pub fn abs_max(&self) -> f32 {
         let a = self.values().copy_to_vec();
+        // dbg!(&a);
         a.par_iter()
             .map(|a| a.abs())
             .max_by(|a, b| a.partial_cmp(b).unwrap())
@@ -137,9 +142,9 @@ impl Vector {
                 .unwrap();
         });
     }
-    pub fn to_numpy(&self) -> String {
+    pub fn to_numpy(&self, var: &str) -> String {
         let a = self.values().copy_to_vec();
-        format!("np.array({:?}, dtype=np.float32)", a)
+        format!("{} = np.array({:?}, dtype=np.float32)", var, a)
     }
 }
 
@@ -166,7 +171,51 @@ impl SparseMatrix {
         let data = SparseMatrixData::from_triplets(device.clone(), n, triplets);
         Self { data, n, device }
     }
-    pub fn to_numpy(&self) -> String {
+    pub fn to_triplets(&self) -> Vec<Triplet> {
+        let values = self.data.values.copy_to_vec();
+        let col_indices = self.data.col_indices.copy_to_vec();
+        let row_offsets = self.data.row_offsets.copy_to_vec();
+        let mut out = vec![];
+        for i in 0..self.n {
+            for j in row_offsets[i] as usize..row_offsets[i + 1] as usize {
+                out.push(Triplet {
+                    row: i as u32,
+                    col: col_indices[j],
+                    value: values[j],
+                })
+            }
+        }
+        out
+    }
+    pub fn diagonal(&self) -> Vector {
+        let out = Vector::new(self.device.clone(), self.n);
+        SparseKernels::with(self.device.clone(), |kernels| {
+            kernels
+                .diag
+                .dispatch([self.n as u32, 1, 1], &self.data, &out.data)
+                .unwrap();
+        });
+        out
+    }
+    pub fn transpose(&self) -> Self {
+        let mut triplets = self.to_triplets();
+        triplets
+            .par_iter_mut()
+            .for_each(|t| std::mem::swap(&mut t.row, &mut t.col));
+        Self::from_triplets(self.device.clone(), self.n, triplets)
+    }
+    pub fn identity(device: Device, n: usize) -> Self {
+        let mut triplets = vec![];
+        for i in 0..n {
+            triplets.push(Triplet {
+                row: i as u32,
+                col: i as u32,
+                value: 1.0,
+            });
+        }
+        Self::from_triplets(device, n, triplets)
+    }
+    pub fn to_numpy(&self, var: &str) -> String {
         let values = self.data.values.copy_to_vec();
         let col_indices = self.data.col_indices.copy_to_vec();
         let row_offsets = self.data.row_offsets.copy_to_vec();
@@ -204,8 +253,8 @@ impl SparseMatrix {
         .unwrap();
         writeln!(
             out,
-            "A = csr_array((values, col_indices, row_offsets), shape=({},{}))",
-            self.n, self.n
+            "{} = csr_array((values, col_indices, row_offsets), shape=({},{}))",
+            var, self.n, self.n
         )
         .unwrap();
         out
@@ -217,53 +266,64 @@ impl SparseKernels {
         let spmv = device
             .create_kernel::<(SparseMatrixData, Buffer<f32>, Buffer<f32>)>(
                 &|a: SparseMatrixDataVar, v: BufferVar<f32>, out: BufferVar<f32>| {
-                    let i = thread_id().x();
+                    let r = dispatch_id().x();
                     let sum = var!(f32);
-                    let j = var!(u32);
-                    j.store(a.row_offsets.read(i));
-                    let end = a.row_offsets.read(i + 1);
+                    let j = var!(u32, a.row_offsets.read(r));
+                    let end = a.row_offsets.read(r + 1);
                     while_!(j.load().cmplt(end), {
-                        sum.store(
-                            sum.load()
-                                + a.values.read(j.load()) * v.read(a.col_indices.read(j.load())),
-                        );
+                        let i = a.col_indices.read(j.load());
+                        sum.store(sum.load() + a.values.read(j.load()) * v.read(i));
                         j.store(j.load() + 1u32);
                     });
-                    out.write(i, sum.load());
+                    out.write(r, sum.load());
                 },
             )
             .unwrap();
         let spmv_sub = device
             .create_kernel::<(SparseMatrixData, Buffer<f32>, Buffer<f32>)>(
                 &|a: SparseMatrixDataVar, v: BufferVar<f32>, out: BufferVar<f32>| {
-                    let i = thread_id().x();
+                    let r = dispatch_id().x();
                     let sum = var!(f32);
-                    let j = var!(u32);
-                    j.store(a.row_offsets.read(i));
-                    let end = a.row_offsets.read(i + 1);
+                    let j = var!(u32, a.row_offsets.read(r));
+                    let end = a.row_offsets.read(r + 1);
                     while_!(j.load().cmplt(end), {
-                        sum.store(
-                            sum.load()
-                                + a.values.read(j.load()) * v.read(a.col_indices.read(j.load())),
-                        );
+                        let i = a.col_indices.read(j.load());
+                        sum.store(sum.load() + a.values.read(j.load()) * v.read(i));
                         j.store(j.load() + 1u32);
                     });
-                    out.write(i, out.read(i) - sum.load());
+                    out.write(r, out.read(r) - sum.load());
                 },
             )
             .unwrap();
         let vec_add_scaled = device
             .create_kernel::<(Buffer<f32>, Buffer<f32>, Buffer<f32>)>(
                 &|a: BufferVar<f32>, b: BufferVar<f32>, out: BufferVar<f32>| {
-                    let i = thread_id().x();
+                    let i = dispatch_id().x();
                     out.write(i, out.read(i) + a.read(0) * b.read(i));
                 },
             )
             .unwrap();
         let zero = device
             .create_kernel::<(Buffer<f32>,)>(&|a: BufferVar<f32>| {
-                let i = thread_id().x();
+                let i = dispatch_id().x();
                 a.write(i, 0.0);
+            })
+            .unwrap();
+        let diag = device
+            .create_kernel::<(SparseMatrixData, Buffer<f32>)>(&|a: SparseMatrixDataVar, d| {
+                let r = dispatch_id().x();
+                let v = var!(f32);
+                let j = var!(u32, a.row_offsets.read(r));
+                let end = a.row_offsets.read(r + 1);
+                while_!(j.load().cmplt(end), {
+                    let i = a.col_indices.read(j.load());
+                    if_!(i.cmpeq(r), {
+                        v.store(a.values.read(j.load()));
+                        break_();
+                    });
+                    j.store(j.load() + 1u32);
+                });
+                d.write(r, v.load());
             })
             .unwrap();
         Self {
@@ -272,6 +332,7 @@ impl SparseKernels {
             spmv_sub,
             vec_add_scaled,
             zero,
+            diag,
         }
     }
     pub fn with(device: Device, mut f: impl FnMut(&SparseKernels)) {
@@ -291,20 +352,31 @@ impl SparseKernels {
         }
     }
 }
-
+#[allow(non_snake_case)]
 pub fn test_sparse() {
     init();
     init_logger();
     let device = create_cpu_device().unwrap();
     let mut triplets = Vec::new();
-    triplets.push(Triplet::new(0, 0, 1.0));
-    triplets.push(Triplet::new(0, 1, 2.0));
+    triplets.push(Triplet::new(0, 0, 4.0));
+    triplets.push(Triplet::new(1, 1, 5.0));
+    triplets.push(Triplet::new(0, 2, 1.0));
+    triplets.push(Triplet::new(2, 0, 1.0));
     triplets.push(Triplet::new(2, 2, 3.0));
-    let a = SparseMatrix::from_triplets(device.clone(), 3, triplets);
-    let v = Vector::from_slice(device.clone(), &[1.0, 2.0, 3.0]);
-    let u = Vector::new(device.clone(), 3);
-    a.multiply(&v, &u);
-    println!("{}", a.to_numpy());
-    println!("{}", v.to_numpy());
-    println!("{}", u.to_numpy());
+    triplets.push(Triplet::new(3, 3, 4.0));
+    triplets.push(Triplet::new(3, 2, 2.0));
+    triplets.push(Triplet::new(2, 3, 2.0));
+    let A = SparseMatrix::from_triplets(device.clone(), 4, triplets);
+    let b = Vector::new(device.clone(), 4);
+    let x = Vector::from_slice(device.clone(), &[-1.5, -0.5, -1.0, 2.0]);
+    A.multiply(&x, &b);
+    println!("{}", A.to_numpy("A"));
+    println!("{}", x.to_numpy("x"));
+    println!("{}", b.to_numpy("b"));
+    let mut solver = PcgSolver::new(device.clone(), 4);
+    let out = Vector::new(device.clone(), 4);
+    solver
+        .solve::<DiagJacobiPreconditioner>(&A, &b, &out)
+        .unwrap();
+    println!("{}", out.to_numpy("out"));
 }
