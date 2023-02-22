@@ -116,6 +116,7 @@ pub struct Simulation {
     pub apply_gravity_kernel: Option<Kernel<(Buffer<f32>,)>>,
     pub pcg_Ax_kernel: Option<Kernel<()>>,
     pub pcg_As_kernel: Option<Kernel<()>>,
+    pub incomplete_poission_kernel: Option<Kernel<()>>,
     pub div_velocity_kernel: Option<Kernel<()>>,
     pub add_scaled_kernel: Option<Kernel<(Buffer<f32>, Buffer<f32>, Buffer<f32>)>>,
     pub dot_kernel: Option<Kernel<(Buffer<f32>, Buffer<f32>, Buffer<f32>)>>,
@@ -183,6 +184,7 @@ impl Simulation {
             apply_gravity_kernel: None,
             pcg_Ax_kernel: None,
             pcg_As_kernel: None,
+            incomplete_poission_kernel: None,
             div_velocity_kernel: None,
             dot_kernel: None,
             abs_max_kernel: None,
@@ -220,7 +222,10 @@ impl Simulation {
                 p + k2
             }
             VelocityIntegration::RK3 => {
-                todo!()
+                let k1 = dt * self.velocity(p);
+                let k2 = dt * self.velocity(p + k1 * 0.5);
+                let k3 = dt * self.velocity(p - k1 + k2 * 2.0);
+                p + (k1 + k2 * 4.0 + k3) / 6.0
             }
         }
     }
@@ -254,6 +259,11 @@ impl Simulation {
         self.pcg_As_kernel = Some(
             self.device
                 .create_kernel::<()>(&|| self.apply_A(&self.pcg_s, &self.pcg_z, false))
+                .unwrap(),
+        );
+        self.incomplete_poission_kernel = Some(
+            self.device
+                .create_kernel::<()>(&|| self.incomplete_poisson(&self.pcg_r, &self.pcg_z))
                 .unwrap(),
         );
         self.dot_kernel =
@@ -313,6 +323,24 @@ impl Simulation {
             (du + dv + dw) / self.h()
         };
         div.set_index(x, d);
+    }
+    pub fn incomplete_poisson(&self, P: &Grid<f32>, z: &Grid<f32>) {
+        let x = dispatch_id();
+        let d = if self.dimension == 2 {
+            let p = P.at_index(x);
+            let x = x.int();
+
+            let p_x = P.at_index_or_zero(x + make_int3(1, 0, 0));
+            let p_y = P.at_index_or_zero(x + make_int3(0, 1, 0));
+            let p_xm = P.at_index_or_zero(x + make_int3(-1, 0, 0));
+            let p_ym = P.at_index_or_zero(x + make_int3(0, -1, 0));
+            let d = ((p_x + p_y + p_xm + p_ym) * (1.0 / 4.0f32) + (9.0 / 8.0f32) * p)
+                / (self.h() * self.h());
+            d
+        } else {
+            todo!()
+        };
+        z.set_index(x.uint(), d);
     }
     pub fn apply_A(&self, P: &Grid<f32>, div2: &Grid<f32>, sub: bool) {
         let x = dispatch_id();
@@ -394,22 +422,32 @@ impl Simulation {
             .unwrap();
     }
     // solve Px = b
-    pub fn apply_preconditioner(&self, b: &Grid<f32>, x: &Grid<f32>) {
-        // first try identity
-        b.values.copy_to_buffer(&x.values);
+    pub fn apply_preconditioner(&self) {
+        let use_ipp = true;
+        if !use_ipp {
+            // first try identity
+            self.pcg_r.values.copy_to_buffer(&self.pcg_z.values);
+        } else {
+            // then try incomplete poisson
+            self.incomplete_poission_kernel
+                .as_ref()
+                .unwrap()
+                .dispatch(self.pcg_r.res)
+                .unwrap();
+        }
     }
-    pub fn advect_particle(&self, dt: Buffer<f32>) {
+    pub fn advect_particle(&self, dt: &Buffer<f32>) {
         self.advect_particle_kernel
             .as_ref()
             .unwrap()
-            .dispatch([self.particles_vec.len() as u32, 1, 1], &dt)
+            .dispatch([self.particles_vec.len() as u32, 1, 1], dt)
             .unwrap();
     }
-    pub fn apply_ext_forces(&self, dt: Buffer<f32>) {
+    pub fn apply_ext_forces(&self, dt: &Buffer<f32>) {
         self.apply_gravity_kernel
             .as_ref()
             .unwrap()
-            .dispatch(self.v.res, &dt)
+            .dispatch(self.v.res, dt)
             .unwrap();
     }
     pub fn compute_div_velocity(&self) {
@@ -420,6 +458,7 @@ impl Simulation {
             .unwrap();
     }
     pub fn solve_pressure(&self) {
+        self.compute_div_velocity();
         let iters = self.pressure_pcg_solver();
         if iters.is_none() {
             panic!("pressure solver failed");
@@ -437,7 +476,7 @@ impl Simulation {
         if rho == 0.0 || rho.is_nan() {
             return None;
         }
-        self.apply_preconditioner(&self.pcg_r, &self.pcg_z);
+        self.apply_preconditioner();
         self.pcg_z.values.copy_to_buffer(&self.pcg_s.values);
         for i in 0..settings.max_iterations {
             self.z_eq_A_s();
@@ -448,7 +487,7 @@ impl Simulation {
             if residual < settings.tolerance {
                 return Some(i + 1);
             }
-            self.apply_preconditioner(&self.pcg_r, &self.pcg_z);
+            self.apply_preconditioner();
             let rho_new = self.dot(&self.pcg_r, &self.pcg_z);
             let beta = rho_new / rho;
             self.add_scaled(beta, &self.pcg_s, &self.pcg_z);
@@ -457,5 +496,16 @@ impl Simulation {
         }
         None
     }
-    pub fn step(&self) {}
+    pub fn step(&self) {
+        let settings = self.settings.copy_to_vec()[0];
+        let dt = self
+            .device
+            .create_buffer_from_slice(&[settings.dt])
+            .unwrap();
+        self.advect_particle(&dt);
+
+        self.apply_ext_forces(&dt);
+
+        self.solve_pressure();
+    }
 }
