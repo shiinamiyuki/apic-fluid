@@ -12,7 +12,6 @@ pub struct Grid<T: Value> {
     pub shift: [T; 3],
 }
 
-
 impl<T: Value> Grid<T> {
     pub fn new(device: Device, res: [u32; 3], dimension: usize, shift: [T; 3]) -> Self {
         if dimension == 2 {
@@ -29,6 +28,7 @@ impl<T: Value> Grid<T> {
         }
     }
     pub fn linear_index(&self, p: Expr<UVec3>) -> Expr<u32> {
+        assert(!self.oob(p.int()));
         let p = p.clamp(
             make_uint3(0, 0, 0),
             make_uint3(self.res[0] - 1, self.res[1] - 1, self.res[2] - 1),
@@ -39,11 +39,24 @@ impl<T: Value> Grid<T> {
             p.x() + p.y() * const_(self.res[0]) + p.z() * const_(self.res[0] * self.res[1])
         }
     }
+    pub fn oob(&self, p: Expr<IVec3>) -> Bool {
+        if self.dimension == 2 {
+            let oob = p.xy().cmplt(IVec2Expr::zero())
+                | p.xy().cmpge(make_uint2(self.res[0], self.res[1]).int());
+            oob.any()
+        } else {
+            let oob = p.cmpge(make_uint3(self.res[0], self.res[1], self.res[2]).int())
+                | p.cmpge(IVec3Expr::zero());
+            oob.any()
+        }
+    }
     pub fn at_index(&self, p: Expr<UVec3>) -> Expr<T> {
+        assert(!self.oob(p.int()));
         let index = self.linear_index(p);
         self.values.var().read(index)
     }
     pub fn set_index(&self, p: Expr<UVec3>, v: Expr<T>) {
+        assert(!self.oob(p.int()));
         let index = self.linear_index(p);
         self.values.var().write(index, v);
     }
@@ -68,19 +81,16 @@ impl Grid<f32> {
         }
     }
     pub fn at_index_or_zero(&self, p: Expr<IVec3>) -> Expr<f32> {
+        let oob = self.oob(p);
         if self.dimension == 2 {
-            let oob = p.xy().cmplt(IVec2Expr::zero())
-                | p.xy().cmpge(make_uint2(self.res[0], self.res[1]).int());
-            if_!(oob.any(), {
+            if_!(oob, {
                 const_(0.0f32)
             }, else{
                 let index = self.linear_index(p.as_uvec3());
             self.values.var().read(index)
             })
         } else {
-            let oob = p.cmplt(IVec3Expr::zero())
-                | p.cmpge(make_uint3(self.res[0], self.res[1], self.res[2]).int());
-            if_!(oob.any(), {
+            if_!(oob, {
                 const_(0.0f32)
             }, else{
                 let index = self.linear_index(p.as_uvec3());
