@@ -1,4 +1,5 @@
 use crate::{
+    grid::Grid,
     sparse::{solver::PcgSolver, SparseMatrix},
     *,
 };
@@ -7,85 +8,20 @@ use crate::{
 pub struct Particle {
     pub pos: Vec3,
     pub vel: Vec3,
+    pub mass: f32,
+}
+pub mod cell_type {
+    pub const FLUID: u32 = 0;
+    pub const SOLID: u32 = 1;
+}
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum ParticleTransfer {
+    None,
+    PIC,
+    FLIP,
+    APIC,
 }
 
-pub struct Particles {
-    pub head: Grid<u32>,
-    pub dimension: usize,
-    pub next: Buffer<u32>,
-    pub particles: Buffer<Particle>,
-    pub h: f32,
-    pub res: [u32; 3],
-    pub reset: Kernel<(Buffer<u32>,)>,
-}
-impl Particles {
-    pub fn new(
-        device: Device,
-        res: [u32; 3],
-        dimension: usize,
-        h: f32,
-        particles: Vec<Particle>,
-    ) -> Self {
-        let head = Grid::<u32>::new(device.clone(), res, dimension, [0, 0, 0]);
-        head.values.view(..).fill(u32::MAX);
-        let next = device.create_buffer(particles.len()).unwrap();
-        let reset = device
-            .create_kernel::<(Buffer<u32>,)>(&|a| {
-                let tid = dispatch_id().x();
-                a.write(tid, u32::MAX);
-            })
-            .unwrap();
-        let particles = device.create_buffer_from_slice(&particles).unwrap();
-        Self {
-            head,
-            reset,
-            dimension,
-            particles,
-            next,
-            h,
-            res,
-        }
-    }
-    pub fn reset(&self) {
-        self.reset
-            .dispatch([self.head.values.len() as u32, 1, 1], &self.head.values)
-            .unwrap();
-        self.reset
-            .dispatch([self.particles.len() as u32, 1, 1], &self.head.values)
-            .unwrap();
-    }
-    pub fn get_cell(&self, p: Expr<Vec3>) -> (Bool, Expr<IVec3>) {
-        let cell = (p / self.h).int();
-        let res = make_uint3(self.res[0], self.res[1], self.res[2]);
-        let oob = cell.cmplt(IVec3Expr::zero()).any() | cell.cmpge(res.int()).any();
-        (oob, cell)
-    }
-    pub fn append(&self, p: Expr<Vec3>, i: Expr<u32>) {
-        let (oob, cell) = self.get_cell(p);
-        if_!(!oob, {
-            let cell = cell.uint();
-            let cell_index = self.head.linear_index(cell);
-            let head = self.head.values.var();
-            while_!(const_(true), {
-                let old = head.read(cell_index);
-                let cur = head.atomic_compare_exchange(cell_index, old, i);
-                if_!(cur.cmpeq(old), {
-                    self.next.var().write(i, old);
-                    break_();
-                })
-            });
-        });
-    }
-    pub fn for_each_particle_in_cell(&self, cell: Expr<u32>, f: impl FnOnce(Expr<u32>)) {
-        let head = self.head.values.var();
-        let next = self.next.var();
-        let p = var!(u32, head.read(cell));
-        while_!(p.load().cmplt(u32::MAX), {
-            f(p.load());
-            p.store(next.read(p.load()));
-        });
-    }
-}
 #[derive(Clone, Copy, Value)]
 #[repr(C)]
 pub struct SimulationSettings {
@@ -98,6 +34,7 @@ pub struct Simulation {
     pub u: Grid<f32>,
     pub v: Grid<f32>,
     pub w: Grid<f32>,
+
     pub p: Grid<f32>,
 
     pub pcg_r: Grid<f32>,
@@ -106,12 +43,13 @@ pub struct Simulation {
     // pub pcg_tmp: Grid<f32>,
     pub div_velocity: Grid<f32>,
 
+    // pub debug_velocity: Grid<Vec3>,
     pub dimension: usize,
     pub res: [u32; 3],
     pub solver: PcgSolver,
     pub A: Option<SparseMatrix>,
     pub particles_vec: Vec<Particle>,
-    pub particles: Option<Particles>,
+    pub particles: Option<Buffer<Particle>>,
     pub advect_particle_kernel: Option<Kernel<(Buffer<f32>,)>>,
     pub apply_gravity_kernel: Option<Kernel<(Buffer<f32>,)>>,
     pub pcg_Ax_kernel: Option<Kernel<()>>,
@@ -121,6 +59,9 @@ pub struct Simulation {
     pub add_scaled_kernel: Option<Kernel<(Buffer<f32>, Buffer<f32>, Buffer<f32>)>>,
     pub dot_kernel: Option<Kernel<(Buffer<f32>, Buffer<f32>, Buffer<f32>)>>,
     pub abs_max_kernel: Option<Kernel<(Buffer<f32>, Buffer<f32>)>>,
+    pub build_particle_list_kernel: Option<Kernel<()>>,
+    pub particle_to_grid_kernel: Option<Kernel<()>>,
+    pub grid_to_particle_kernel: Option<Kernel<()>>,
     pub device: Device,
     pub settings: Buffer<SimulationSettings>,
 }
@@ -189,6 +130,9 @@ impl Simulation {
             dot_kernel: None,
             abs_max_kernel: None,
             add_scaled_kernel: None,
+            build_particle_list_kernel: None,
+            particle_to_grid_kernel: None,
+            grid_to_particle_kernel: None,
             device,
             settings,
         }
@@ -230,15 +174,38 @@ impl Simulation {
         }
     }
     pub fn commit(&mut self) {
+        self.build_particle_list_kernel = Some(
+            self.device
+                .create_kernel::<()>(&|| {
+                    let i = dispatch_id().x();
+                    let particles = self.particles.as_ref().unwrap();
+                    let pt = particles.var().read(i);
+                    self.u.add_to_cell(pt.pos(), i);
+                    self.v.add_to_cell(pt.pos(), i);
+                    if self.dimension == 3 {
+                        self.w.add_to_cell(pt.pos(), i);
+                    }
+                })
+                .unwrap(),
+        );
+        self.particle_to_grid_kernel = Some(
+            self.device
+                .create_kernel::<()>(&|| {
+                    let cell = dispatch_id().x();
+                    let particles = self.particles.as_ref().unwrap();
+                    todo!()
+                })
+                .unwrap(),
+        );
         self.advect_particle_kernel = Some(
             self.device
                 .create_kernel::<(Buffer<f32>,)>(&|dt: BufferVar<f32>| {
                     let i = dispatch_id().x();
                     let particles = self.particles.as_ref().unwrap();
-                    let pt = particles.particles.var().read(i);
+                    let pt = particles.var().read(i);
                     let dt = dt.read(0);
                     pt.set_pos(self.integrate_velocity(pt.pos(), dt, VelocityIntegration::RK2));
-                    particles.particles.var().write(i, pt);
+                    particles.var().write(i, pt);
                 })
                 .unwrap(),
         );
@@ -496,6 +463,15 @@ impl Simulation {
         }
         None
     }
+
+    fn transfer_particles_to_grid(&self) {
+        self.build_particle_list_kernel
+            .as_ref()
+            .unwrap()
+            .dispatch([self.particles_vec.len() as u32, 1, 1])
+            .unwrap();
+    }
+    fn transfter_grid_to_particles(&self) {}
     pub fn step(&self) {
         let settings = self.settings.copy_to_vec()[0];
         let dt = self
@@ -503,9 +479,30 @@ impl Simulation {
             .create_buffer_from_slice(&[settings.dt])
             .unwrap();
         self.advect_particle(&dt);
-
+        self.transfer_particles_to_grid();
         self.apply_ext_forces(&dt);
 
         self.solve_pressure();
+        self.transfter_grid_to_particles();
+    }
+
+    pub fn dump_velocity_field_2d(&self, image_path: &str) {
+        assert_eq!(self.dimension, 2);
+        use exr::prelude::*;
+        let v = self.v.values.copy_to_vec();
+        let u = self.u.values.copy_to_vec();
+        write_rgb_file(
+            image_path,
+            self.res[0] as usize,
+            self.res[1] as usize,
+            |x, y| {
+                let i = (y * self.res[0] as usize + x) as usize;
+                let v = v[i];
+                let u = u[i];
+                let mag = (v * v + u * u).sqrt();
+                (mag, mag, mag)
+            },
+        )
+        .unwrap();
     }
 }

@@ -370,8 +370,8 @@ checksum = "7fcaabb2fef8c910e7f4c7ce9f67a1283a1715879a7c230ca9d6d1ae31f16d91"
 
 [[package]]
 name = "embree_sys"
-version = "0.1.0"
-source = "git+https://github.com/shiinamiyuki/embree-sys#d66a8079130026c03c13b803af4859f28e7d20fb"
+version = "0.1.1"
+source = "git+https://github.com/shiinamiyuki/embree-sys#faf3073c766984fae7325dbfd64ce5ecd4ee1ce3"
 dependencies = [
  "bindgen 0.64.0",
  "cmake",
@@ -479,6 +479,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "fs2"
+version = "0.4.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9564fc758e15025b46aa6643b1b77d047d1a56a1aea6e01002ac0c7026876213"
+dependencies = [
+ "libc",
+ "winapi",
+]
+
+[[package]]
 name = "futures-core"
 version = "0.3.26"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -489,15 +499,6 @@ name = "futures-sink"
 version = "0.3.26"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f310820bb3e8cfd46c80db4d7fb8353e15dfff853a127158425f31e0be6c8364"
-
-[[package]]
-name = "gc"
-version = "0.1.0"
-source = "git+https://github.com/shiinamiyuki/gc#b6649233f10a4f838c717fb3e302b833650beb18"
-dependencies = [
- "parking_lot",
- "serde",
-]
 
 [[package]]
 name = "generic-array"
@@ -663,9 +664,9 @@ dependencies = [
 
 [[package]]
 name = "is-terminal"
-version = "0.4.3"
+version = "0.4.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "22e18b0a45d56fe973d6db23972bf5bc46f988a4a2385deac9cc29572f09daef"
+checksum = "21b6b32576413a8e69b90e952e4a026476040d81017b80445deda5f2d3921857"
 dependencies = [
  "hermit-abi 0.3.1",
  "io-lifetimes",
@@ -796,6 +797,7 @@ name = "luisa_compute_backend"
 version = "0.1.0"
 dependencies = [
  "embree_sys",
+ "fs2",
  "lazy_static",
  "libc",
  "libloading",
@@ -842,7 +844,6 @@ dependencies = [
  "base64ct",
  "bincode",
  "cbindgen",
- "gc",
  "indexmap",
  "lazy_static",
  "luisa_compute_api_types",
@@ -1292,9 +1293,9 @@ checksum = "73473c0e59e6d5812c5dfe2a064a6444949f089e20eec9a2e5506596494e4623"
 
 [[package]]
 name = "syn"
-version = "1.0.107"
+version = "1.0.109"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1f4064b5b16e03ae50984a5a8ed5d4f8803e6bc1fd170a3cda91a1be4b18e3f5"
+checksum = "72b64191b275b66ffe2469e8af2c1cfe3bafa67b529ead792a6d0160888b4237"
 dependencies = [
  "proc-macro2",
  "quote",
