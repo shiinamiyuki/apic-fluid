@@ -51,20 +51,22 @@ impl CellParticleList {
 #[derive(KernelArg)]
 pub struct Grid<T: Value> {
     pub values: Buffer<T>,
+    pub dx: f32,
     #[luisa(exclude)]
     pub dimension: usize,
     #[luisa(exclude)]
     pub res: [u32; 3],
     #[luisa(exclude)]
-    pub shift: [T; 3],
+    pub origin: [f32; 3],
     #[luisa(exclude)]
     pub cell_particle_list: Option<CellParticleList>,
     #[luisa(exclude)]
     device: Device,
 }
 
+
 impl<T: Value> Grid<T> {
-    pub fn new(device: Device, res: [u32; 3], dimension: usize, shift: [T; 3]) -> Self {
+    pub fn new(device: Device, res: [u32; 3], dimension: usize, origin: [f32; 3], dx: f32) -> Self {
         if dimension == 2 {
             assert_eq!(res[2], 1);
         }
@@ -75,13 +77,19 @@ impl<T: Value> Grid<T> {
             dimension,
             values,
             res,
-            shift,
+            origin,
             cell_particle_list: None,
             device,
+            dx,
         }
     }
     pub fn init_particle_list(&mut self, count: usize) {
         self.cell_particle_list = Some(CellParticleList::new(self.device.clone(), count));
+    }
+    pub fn reset_particle_list(&self) {
+        if let Some(list) = &self.cell_particle_list {
+            list.reset();
+        }
     }
     pub fn linear_index(&self, p: Expr<Uint3>) -> Expr<u32> {
         assert(!self.oob(p.int()));
@@ -116,8 +124,22 @@ impl<T: Value> Grid<T> {
         let index = self.linear_index(p);
         self.values.var().write(index, v);
     }
-    pub fn add_to_cell(&self, p: Expr<Float3>, i: Expr<u32>) {
+    pub fn write(&self, p: Expr<Uint3>, v: Expr<T>) {
         let oob = self.oob(p.int());
+        let linear_index = self.linear_index(p);
+        assert(!oob);
+        self.values.var().write(linear_index, v);
+    }
+    pub fn pos_f_to_i(&self, p: Expr<Float3>) -> Expr<Int3> {
+        let p = (p - make_float3(self.origin[0], self.origin[1], self.origin[2])) / self.dx;
+        p.int()
+    }
+    pub fn pos_i_to_f(&self, p: Expr<Int3>) -> Expr<Float3> {
+        p.float() * self.dx + make_float3(self.origin[0], self.origin[1], self.origin[2])
+    }
+    pub fn add_to_cell(&self, p: Expr<Float3>, i: Expr<u32>) {
+        let p = self.pos_f_to_i(p);
+        let oob = self.oob(p);
         let linear_index = self.linear_index(p.uint());
         if_!(!oob, {
             self.cell_particle_list
@@ -126,19 +148,58 @@ impl<T: Value> Grid<T> {
                 .append(linear_index, i);
         });
     }
-    pub fn for_each_particle_in_cell(&self, cell: Expr<Uint3>, f: impl FnOnce(Expr<u32>)) {
+    pub fn for_each_neighbor_node(&self, p: Expr<Float3>, f: impl Fn(Expr<Uint3>)) {
+        let ip = self.pos_f_to_i(p);
+        let map = |offset: [i32; 3]| {
+            let offset = make_int3(offset[0], offset[1], offset[2]);
+            let neighbor = ip + offset;
+            if_!(self.oob(neighbor), { f(neighbor.uint()) })
+        };
+        map([0, 0, 0]);
+        map([1, 0, 0]);
+        map([0, 1, 0]);
+        map([1, 1, 0]);
+        if self.dimension == 3 {
+            map([0, 0, 1]);
+            map([1, 0, 1]);
+            map([0, 1, 1]);
+            map([1, 1, 1]);
+        }
+    }
+    pub fn for_each_particle_in_cell(&self, cell: Expr<Uint3>, f: impl Fn(Expr<u32>)) {
         let index = self.linear_index(cell);
         self.cell_particle_list
             .as_ref()
             .unwrap()
             .for_each_particle_in_cell(index, f);
     }
+    pub fn for_each_particle_in_neighbor(&self, node: Expr<Uint3>, f: impl Fn(Expr<u32>)) {
+        let f = &f;
+        let map = |offset: [i32; 3]| {
+            let offset = make_int3(offset[0], offset[1], offset[2]);
+            let neighbor = node.int() + offset;
+            if_!(self.oob(neighbor), {
+                let neighbor = neighbor.uint();
+                self.for_each_particle_in_cell(neighbor, f)
+            })
+        };
+        map([0, 0, 0]);
+        map([-1, 0, 0]);
+        map([0, -1, 0]);
+        map([-1, -1, 0]);
+        if self.dimension == 3 {
+            map([0, 0, -1]);
+            map([-1, 0, -1]);
+            map([0, -1, -1]);
+            map([-1, -1, -1]);
+        }
+    }
 }
 
 impl Grid<f32> {
     pub fn bilinear(&self, p: Expr<Float3>) -> Expr<f32> {
         if self.dimension == 2 {
-            let p = p - make_float3(self.shift[0], self.shift[1], 0.0);
+            let p = p - make_float3(self.origin[0], self.origin[1], 0.0);
             let ip = p.floor().int();
             let offset = p - ip.float();
             let v00 = self.at_index(ip.uint());
