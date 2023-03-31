@@ -1,9 +1,4 @@
-use crate::{
-    grid::Grid,
-    pcgsolver::Stencil,
-    sparse::{solver::PcgSolver, SparseMatrix},
-    *,
-};
+use crate::{grid::Grid, pcgsolver::Stencil, *};
 const PAR_REDUCE_BLOCK_SIZE: usize = 1024;
 #[derive(Clone, Copy, Value, Default)]
 #[repr(C)]
@@ -74,7 +69,8 @@ pub struct Simulation {
     // pub debug_velocity: Grid<Float3>,
     pub dimension: usize,
     pub res: [u32; 3],
-    pub solver: PcgSolver,
+
+    // offset: self, x_p, x_m, y_p, y_m, z_p, z_m
     pub A: Option<Stencil>,
     pub particles_vec: Vec<Particle>,
     pub particles: Option<Buffer<Particle>>,
@@ -83,6 +79,7 @@ pub struct Simulation {
     pub pcg_Ax_kernel: Option<Kernel<()>>,
     pub pcg_As_kernel: Option<Kernel<()>>,
     pub incomplete_poission_kernel: Option<Kernel<()>>,
+    pub build_A_kernel: Option<Kernel<()>>,
     pub div_velocity_kernel: Option<Kernel<()>>,
     pub add_scaled_kernel: Option<Kernel<(Buffer<f32>, Buffer<f32>, Buffer<f32>)>>,
     pub dot_kernel: Option<Kernel<(Buffer<f32>, Buffer<f32>, Buffer<f32>)>>,
@@ -167,8 +164,8 @@ impl Simulation {
             div_velocity,
             dimension,
             res,
-            solver: PcgSolver::new(device.clone(), (res[0] * res[1] * res[2]) as usize),
             A: None,
+            build_A_kernel: None,
             particles_vec: Vec::new(),
             particles: None,
             advect_particle_kernel: None,
@@ -223,11 +220,26 @@ impl Simulation {
             }
         }
     }
+
     pub fn commit(&mut self) {
         self.u.init_particle_list(self.particles_vec.len());
         self.v.init_particle_list(self.particles_vec.len());
+        let p_res = self.p.res;
+        let offsets = [
+            Int3::new(0, 0, 0),
+            Int3::new(1, 0, 0),
+            Int3::new(-1, 0, 0),
+            Int3::new(0, 1, 0),
+            Int3::new(0, -1, 0),
+            Int3::new(0, 0, 1),
+            Int3::new(0, 0, -1),
+        ];
         if self.dimension == 3 {
             self.w.init_particle_list(self.particles_vec.len());
+
+            self.A = Some(Stencil::new(self.device.clone(), p_res, &offsets));
+        } else {
+            self.A = Some(Stencil::new(self.device.clone(), p_res, &offsets[..5]));
         }
         self.particles = Some(
             self.device
@@ -336,6 +348,13 @@ impl Simulation {
                 })
                 .unwrap(),
         );
+        self.build_A_kernel = Some(
+            self.device
+                .create_kernel_async::<()>(&|| {
+                    self.build_A_impl();
+                })
+                .unwrap(),
+        );
         self.pcg_Ax_kernel = Some(
             self.device
                 .create_kernel_async::<()>(&|| self.apply_A(&self.p, &self.pcg_r, true))
@@ -355,6 +374,7 @@ impl Simulation {
             self.device
                 .create_kernel_async::<(Buffer<f32>, Buffer<f32>, Buffer<f32>)>(
                     &|a: BufferVar<f32>, b: BufferVar<f32>, result: BufferVar<f32>| {
+                        set_block_size([PAR_REDUCE_BLOCK_SIZE as u32 + 1, 1, 1]);
                         let i = dispatch_id().x();
                         let block_size = PAR_REDUCE_BLOCK_SIZE as u32;
                         result.atomic_fetch_add(i % block_size, a.read(i) * b.read(i));
@@ -366,6 +386,7 @@ impl Simulation {
             self.device
                 .create_kernel_async::<(Buffer<f32>, Buffer<f32>)>(
                     &|a: BufferVar<f32>, result: BufferVar<f32>| {
+                        set_block_size([PAR_REDUCE_BLOCK_SIZE as u32 + 1, 1, 1]);
                         let i = dispatch_id().x();
                         let block_size = PAR_REDUCE_BLOCK_SIZE as u32;
                         let cur = a.read(i).abs();
@@ -380,6 +401,7 @@ impl Simulation {
             self.device
                 .create_kernel_async::<(Buffer<f32>, Buffer<f32>, Buffer<f32>)>(
                     &|k: BufferVar<f32>, a: BufferVar<f32>, out: BufferVar<f32>| {
+                        set_block_size([512, 1, 1]);
                         let i = dispatch_id().x();
                         out.write(i, out.read(i) + k.read(0) * a.read(i));
                     },
@@ -534,7 +556,7 @@ impl Simulation {
         Then to apply the preconditioner, simply compute:
             z_{i,j} = todo!()
         */
-
+        set_block_size([64, 64, 64]);
         let x = dispatch_id();
         let d = if self.dimension == 2 {
             let p = P.at_index(x);
@@ -552,8 +574,33 @@ impl Simulation {
         };
         z.set_index(x.uint(), d);
     }
+    pub fn build_A_impl(&self) {
+        let x = dispatch_id();
+        let i = self.p.linear_index(x);
+        let A = self.A.as_ref().unwrap();
+        let A_coeff = A.coeff.var();
+
+        if self.dimension == 2 {
+            assert_eq!(A.offsets.len(), 5);
+            A_coeff.write(i * A.offsets.len() as u32, 4.0 / self.h());
+            A_coeff.write(i * A.offsets.len() as u32 + 1, -1.0 / self.h());
+            A_coeff.write(i * A.offsets.len() as u32 + 2, -1.0 / self.h());
+            A_coeff.write(i * A.offsets.len() as u32 + 3, -1.0 / self.h());
+            A_coeff.write(i * A.offsets.len() as u32 + 4, -1.0 / self.h());
+        } else {
+            assert_eq!(A.offsets.len(), 7);
+            A_coeff.write(i * A.offsets.len() as u32, 6.0 / self.h());
+            A_coeff.write(i * A.offsets.len() as u32 + 1, -1.0 / self.h());
+            A_coeff.write(i * A.offsets.len() as u32 + 2, -1.0 / self.h());
+            A_coeff.write(i * A.offsets.len() as u32 + 3, -1.0 / self.h());
+            A_coeff.write(i * A.offsets.len() as u32 + 4, -1.0 / self.h());
+            A_coeff.write(i * A.offsets.len() as u32 + 5, -1.0 / self.h());
+            A_coeff.write(i * A.offsets.len() as u32 + 6, -1.0 / self.h());
+        }
+    }
     pub fn apply_A(&self, P: &Grid<f32>, div2: &Grid<f32>, sub: bool) {
         assert_eq!(P.res, div2.res);
+        set_block_size([64, 64, 64]);
         let x = dispatch_id();
         let d = if self.dimension == 2 {
             let p = P.at_index(x);
@@ -562,7 +609,7 @@ impl Simulation {
             let p_y = P.at_index_or_zero(x + make_int3(0, 1, 0));
             let p_xm = P.at_index_or_zero(x + make_int3(-1, 0, 0));
             let p_ym = P.at_index_or_zero(x + make_int3(0, -1, 0));
-            let d = (p_x + p_y + p_xm + p_ym - 4.0 * p) / (self.h() * self.h());
+            let d = (-(p_x + p_y + p_xm + p_ym) + 4.0 * p) / (self.h() * self.h());
             d
         } else {
             todo!()
@@ -588,45 +635,45 @@ impl Simulation {
             .unwrap();
     }
     pub fn dot(&self, a: &Grid<f32>, b: &Grid<f32>) -> f32 {
-        // let tmp = self
-        //     .device
-        //     .create_buffer_from_fn::<f32>(PAR_REDUCE_BLOCK_SIZE, |_| 0.0)
-        //     .unwrap();
-        // self.dot_kernel
-        //     .as_ref()
-        //     .unwrap()
-        //     .dispatch(
-        //         [a.res[0] * a.res[1] * a.res[2], 1, 1],
-        //         &a.values,
-        //         &b.values,
-        //         &tmp,
-        //     )
-        //     .unwrap();
-        // tmp.copy_to_vec().iter().sum()
-        let a = a.values.copy_to_vec();
-        let b = b.values.copy_to_vec();
-        a.iter().zip(b.iter()).map(|(a, b)| a * b).sum()
+        let tmp = self
+            .device
+            .create_buffer_from_fn::<f32>(PAR_REDUCE_BLOCK_SIZE, |_| 0.0)
+            .unwrap();
+        self.dot_kernel
+            .as_ref()
+            .unwrap()
+            .dispatch(
+                [a.res[0] * a.res[1] * a.res[2], 1, 1],
+                &a.values,
+                &b.values,
+                &tmp,
+            )
+            .unwrap();
+        tmp.copy_to_vec().iter().sum()
+        // let a = a.values.copy_to_vec();
+        // let b = b.values.copy_to_vec();
+        // a.par_iter().zip(b.par_iter()).map(|(a, b)| a * b).sum()
     }
     pub fn abs_max(&self, a: &Grid<f32>) -> f32 {
-        // let tmp = self
-        //     .device
-        //     .create_buffer_from_fn::<f32>(PAR_REDUCE_BLOCK_SIZE, |_| 0.0)
-        //     .unwrap();
-        // self.abs_max_kernel
-        //     .as_ref()
-        //     .unwrap()
-        //     .dispatch([a.res[0] * a.res[1] * a.res[2], 1, 1], &a.values, &tmp)
-        //     .unwrap();
-        // *tmp.copy_to_vec()
-        //     .iter()
-        //     .max_by(|a, b| a.partial_cmp(b).unwrap())
-        //     .unwrap()
-        a.values
-            .copy_to_vec()
+        let tmp = self
+            .device
+            .create_buffer_from_fn::<f32>(PAR_REDUCE_BLOCK_SIZE, |_| 0.0)
+            .unwrap();
+        self.abs_max_kernel
+            .as_ref()
+            .unwrap()
+            .dispatch([a.res[0] * a.res[1] * a.res[2], 1, 1], &a.values, &tmp)
+            .unwrap();
+        *tmp.copy_to_vec()
             .iter()
-            .map(|x| x.abs())
             .max_by(|a, b| a.partial_cmp(b).unwrap())
             .unwrap()
+        // a.values
+        //     .copy_to_vec()
+        //     .par_iter()
+        //     .map(|x| x.abs())
+        //     .max_by(|a, b| a.partial_cmp(b).unwrap())
+        //     .unwrap()
     }
     pub fn add_scaled(&self, k: f32, a: &Grid<f32>, out: &Grid<f32>) {
         assert_eq!(a.res, out.res);
@@ -684,6 +731,30 @@ impl Simulation {
         let iters = self.pressure_pcg_solver();
         if iters.is_none() {
             panic!("pressure solver failed");
+        }
+
+        let my_solution = self.p.values.copy_to_vec();
+        self.build_A_kernel
+            .as_ref()
+            .unwrap()
+            .dispatch(self.p.res)
+            .unwrap();
+        pcgsolver::eigen_solve(
+            self.A.as_ref().unwrap(),
+            &self.div_velocity.values,
+            &self.p.values,
+        );
+        let eigen_solution = self.p.values.copy_to_vec();
+        dbg!(&my_solution);
+        dbg!(&eigen_solution);
+        for (a, b) in my_solution.iter().zip(eigen_solution.iter()) {
+            let a = *a;
+            let b = *b;
+            if (a - b).abs() / (b.abs() + 0.01) > 1e-3 {
+                dbg!(a);
+                dbg!(b);
+                panic!("solver failed");
+            }
         }
     }
     pub fn pressure_pcg_solver(&self) -> Option<u32> {

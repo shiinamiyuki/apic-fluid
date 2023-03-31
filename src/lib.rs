@@ -5,7 +5,6 @@ pub use luisa_compute as luisa;
 use rayon::prelude::*;
 pub mod fluid;
 pub mod grid;
-pub mod sparse;
 pub mod pcgsolver;
 
 pub fn trilinear_weight(off: Expr<Float3>, dim: usize) -> Expr<f32> {

@@ -1,6 +1,6 @@
 use std::env::current_exe;
 
-use apic_fluid::{fluid::*, *, sparse::test_sparse2};
+use apic_fluid::{fluid::*, *};
 use luisa::init_logger;
 use rand::*;
 
@@ -14,12 +14,12 @@ fn test_solve() {
             dt: 0.01,
             max_iterations: 1024,
             tolerance: 1e-4,
-            res: [512, 512, 1],
+            res: [4, 4, 1],
             h: 1.0,
             dimension: 2,
             transfer: ParticleTransfer::Pic,
             advect: VelocityIntegration::RK3,
-            preconditioner: Preconditioner::Identity,
+            preconditioner: Preconditioner::IncompletePoisson,
         },
     );
     sim.particles_vec = vec![Particle::default(); 100];
@@ -32,5 +32,4 @@ fn test_solve() {
 }
 fn main() {
     test_solve();
-    // test_sparse2();
 }

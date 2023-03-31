@@ -64,7 +64,6 @@ pub struct Grid<T: Value> {
     device: Device,
 }
 
-
 impl<T: Value> Grid<T> {
     pub fn new(device: Device, res: [u32; 3], dimension: usize, origin: [f32; 3], dx: f32) -> Self {
         if dimension == 2 {
@@ -89,6 +88,13 @@ impl<T: Value> Grid<T> {
     pub fn reset_particle_list(&self) {
         if let Some(list) = &self.cell_particle_list {
             list.reset();
+        }
+    }
+    pub fn linear_index_host(&self, p: Uint3) -> u32 {
+        if self.dimension == 2 {
+            p.x + p.y * self.res[0]
+        } else {
+            p.x + p.y * self.res[0] + p.z * self.res[0] * self.res[1]
         }
     }
     pub fn linear_index(&self, p: Expr<Uint3>) -> Expr<u32> {
