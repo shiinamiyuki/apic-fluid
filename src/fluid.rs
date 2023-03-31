@@ -1,9 +1,11 @@
 use crate::{
     grid::Grid,
+    pcgsolver::Stencil,
     sparse::{solver::PcgSolver, SparseMatrix},
     *,
 };
-#[derive(Clone, Copy, Value)]
+const PAR_REDUCE_BLOCK_SIZE: usize = 1024;
+#[derive(Clone, Copy, Value, Default)]
 #[repr(C)]
 pub struct Particle {
     pub pos: Float3,
@@ -73,7 +75,7 @@ pub struct Simulation {
     pub dimension: usize,
     pub res: [u32; 3],
     pub solver: PcgSolver,
-    pub A: Option<SparseMatrix>,
+    pub A: Option<Stencil>,
     pub particles_vec: Vec<Particle>,
     pub particles: Option<Buffer<Particle>>,
     pub advect_particle_kernel: Option<Kernel<(Buffer<f32>,)>>,
@@ -123,7 +125,11 @@ impl Simulation {
         let make_pressure_grid = || {
             Grid::new(
                 device.clone(),
-                [res[0] - 1, res[1] - 1, res[2] - 1], // boundary is zero
+                [
+                    res[0] - 1,
+                    res[1] - 1,
+                    if dimension == 3 { res[2] - 1 } else { 1 },
+                ], // boundary is zero
                 dimension,
                 [0.0, 0.0, 0.0],
                 h,
@@ -218,9 +224,19 @@ impl Simulation {
         }
     }
     pub fn commit(&mut self) {
+        self.u.init_particle_list(self.particles_vec.len());
+        self.v.init_particle_list(self.particles_vec.len());
+        if self.dimension == 3 {
+            self.w.init_particle_list(self.particles_vec.len());
+        }
+        self.particles = Some(
+            self.device
+                .create_buffer_from_slice(&self.particles_vec)
+                .unwrap(),
+        );
         self.build_particle_list_kernel = Some(
             self.device
-                .create_kernel::<()>(&|| {
+                .create_kernel_async::<()>(&|| {
                     let i = dispatch_id().x();
                     let particles = self.particles.as_ref().unwrap();
                     let pt = particles.var().read(i);
@@ -234,7 +250,7 @@ impl Simulation {
         );
         self.particle_to_grid_kernel = Some(
             self.device
-                .create_kernel::<()>(&|| {
+                .create_kernel_async::<()>(&|| {
                     let cell_idx = dispatch_id().xyz();
                     let particles = self.particles.as_ref().unwrap();
                     let transfer = self.settings.transfer;
@@ -267,7 +283,7 @@ impl Simulation {
         );
         self.grid_to_particle_kernel = Some(
             self.device
-                .create_kernel::<()>(&|| {
+                .create_kernel_async::<()>(&|| {
                     let particles = self.particles.as_ref().unwrap();
                     let pt_idx = dispatch_id().x();
                     let transfer = self.settings.transfer;
@@ -301,7 +317,7 @@ impl Simulation {
         );
         self.advect_particle_kernel = Some(
             self.device
-                .create_kernel::<(Buffer<f32>,)>(&|dt: BufferVar<f32>| {
+                .create_kernel_async::<(Buffer<f32>,)>(&|dt: BufferVar<f32>| {
                     let i = dispatch_id().x();
                     let particles = self.particles.as_ref().unwrap();
                     let pt = particles.var().read(i);
@@ -313,7 +329,7 @@ impl Simulation {
         );
         self.apply_gravity_kernel = Some(
             self.device
-                .create_kernel::<(Buffer<f32>,)>(&|dt: BufferVar<f32>| {
+                .create_kernel_async::<(Buffer<f32>,)>(&|dt: BufferVar<f32>| {
                     let p = dispatch_id();
                     let v = self.v.at_index(p);
                     self.v.set_index(p, v - 0.981 * dt.read(0));
@@ -322,37 +338,36 @@ impl Simulation {
         );
         self.pcg_Ax_kernel = Some(
             self.device
-                .create_kernel::<()>(&|| self.apply_A(&self.p, &self.pcg_r, true))
+                .create_kernel_async::<()>(&|| self.apply_A(&self.p, &self.pcg_r, true))
                 .unwrap(),
         );
         self.pcg_As_kernel = Some(
             self.device
-                .create_kernel::<()>(&|| self.apply_A(&self.pcg_s, &self.pcg_z, false))
+                .create_kernel_async::<()>(&|| self.apply_A(&self.pcg_s, &self.pcg_z, false))
                 .unwrap(),
         );
         self.incomplete_poission_kernel = Some(
             self.device
-                .create_kernel::<()>(&|| self.incomplete_poisson(&self.pcg_r, &self.pcg_z))
+                .create_kernel_async::<()>(&|| self.incomplete_poisson(&self.pcg_r, &self.pcg_z))
                 .unwrap(),
         );
-        self.dot_kernel =
-            Some(
-                self.device
-                    .create_kernel::<(Buffer<f32>, Buffer<f32>, Buffer<f32>)>(
-                        &|a: BufferVar<f32>, b: BufferVar<f32>, result: BufferVar<f32>| {
-                            let i = dispatch_id().x();
-                            let block_size = 256;
-                            result.atomic_fetch_add(i % block_size, a.read(i) * b.read(i));
-                        },
-                    )
-                    .unwrap(),
-            );
+        self.dot_kernel = Some(
+            self.device
+                .create_kernel_async::<(Buffer<f32>, Buffer<f32>, Buffer<f32>)>(
+                    &|a: BufferVar<f32>, b: BufferVar<f32>, result: BufferVar<f32>| {
+                        let i = dispatch_id().x();
+                        let block_size = PAR_REDUCE_BLOCK_SIZE as u32;
+                        result.atomic_fetch_add(i % block_size, a.read(i) * b.read(i));
+                    },
+                )
+                .unwrap(),
+        );
         self.abs_max_kernel = Some(
             self.device
-                .create_kernel::<(Buffer<f32>, Buffer<f32>)>(
+                .create_kernel_async::<(Buffer<f32>, Buffer<f32>)>(
                     &|a: BufferVar<f32>, result: BufferVar<f32>| {
                         let i = dispatch_id().x();
-                        let block_size = 256;
+                        let block_size = PAR_REDUCE_BLOCK_SIZE as u32;
                         let cur = a.read(i).abs();
                         let j = i % block_size;
                         result.atomic_fetch_max(j, cur);
@@ -360,19 +375,20 @@ impl Simulation {
                 )
                 .unwrap(),
         );
+        // FIX!
         self.add_scaled_kernel = Some(
             self.device
-                .create_kernel::<(Buffer<f32>, Buffer<f32>, Buffer<f32>)>(
+                .create_kernel_async::<(Buffer<f32>, Buffer<f32>, Buffer<f32>)>(
                     &|k: BufferVar<f32>, a: BufferVar<f32>, out: BufferVar<f32>| {
                         let i = dispatch_id().x();
-                        out.write(i, a.read(i) + k.read(0) * a.read(i));
+                        out.write(i, out.read(i) + k.read(0) * a.read(i));
                     },
                 )
                 .unwrap(),
         );
         self.div_velocity_kernel = Some(
             self.device
-                .create_kernel::<()>(&|| {
+                .create_kernel_async::<()>(&|| {
                     self.divergence(&self.u, &self.v, &self.w, &self.div_velocity)
                 })
                 .unwrap(),
@@ -430,7 +446,7 @@ impl Simulation {
         let apic_flip_v = apic_flip_mv.load() / m.load();
         // TODO: check this
         let final_v = (pic_weight + flip_weight) * pic_flip_v + apic_weight * apic_flip_v;
-        g.write(cell_idx, final_v);
+        g.set_index(cell_idx, final_v);
     }
     fn transfer_grid_to_particles_impl(
         &self,
@@ -494,6 +510,7 @@ impl Simulation {
     pub fn divergence(&self, u: &Grid<f32>, v: &Grid<f32>, w: &Grid<f32>, div: &Grid<f32>) {
         let x = dispatch_id();
         let offset = make_uint2(0, 1);
+
         let d: Expr<f32> = if self.dimension == 2 {
             let du = u.at_index(x + offset.yxx()) - u.at_index(x);
             let dv = v.at_index(x + offset.xyx()) - v.at_index(x);
@@ -504,9 +521,20 @@ impl Simulation {
             let dw = w.at_index(x + offset.xxy()) - w.at_index(x);
             (du + dv + dw) / self.h()
         };
+        // cpu_dbg!(x);
+        // cpu_dbg!(d);
         div.set_index(x, d);
     }
     pub fn incomplete_poisson(&self, P: &Grid<f32>, z: &Grid<f32>) {
+        // TODO: check this
+        /*
+        Incomplete Poisson:
+        If Ax=b can be written as stencil operation:
+            b_{i,j} = m_{i-1, j} * x_{i-1,j} + m_{i, j-1} * x_{i,j-1} + m_{i+1, j} * x_{i+1,j}+ m_{i, j+1} * x_{i,j+1} + m_{i,j} * x_{i,j}
+        Then to apply the preconditioner, simply compute:
+            z_{i,j} = todo!()
+        */
+
         let x = dispatch_id();
         let d = if self.dimension == 2 {
             let p = P.at_index(x);
@@ -525,6 +553,7 @@ impl Simulation {
         z.set_index(x.uint(), d);
     }
     pub fn apply_A(&self, P: &Grid<f32>, div2: &Grid<f32>, sub: bool) {
+        assert_eq!(P.res, div2.res);
         let x = dispatch_id();
         let d = if self.dimension == 2 {
             let p = P.at_index(x);
@@ -559,38 +588,48 @@ impl Simulation {
             .unwrap();
     }
     pub fn dot(&self, a: &Grid<f32>, b: &Grid<f32>) -> f32 {
-        let tmp = self
-            .device
-            .create_buffer_from_fn::<f32>(256, |_| 0.0)
-            .unwrap();
-        self.dot_kernel
-            .as_ref()
-            .unwrap()
-            .dispatch(
-                [a.res[0] * a.res[1] * a.res[2], 1, 1],
-                &a.values,
-                &b.values,
-                &tmp,
-            )
-            .unwrap();
-        tmp.copy_to_vec().iter().sum()
+        // let tmp = self
+        //     .device
+        //     .create_buffer_from_fn::<f32>(PAR_REDUCE_BLOCK_SIZE, |_| 0.0)
+        //     .unwrap();
+        // self.dot_kernel
+        //     .as_ref()
+        //     .unwrap()
+        //     .dispatch(
+        //         [a.res[0] * a.res[1] * a.res[2], 1, 1],
+        //         &a.values,
+        //         &b.values,
+        //         &tmp,
+        //     )
+        //     .unwrap();
+        // tmp.copy_to_vec().iter().sum()
+        let a = a.values.copy_to_vec();
+        let b = b.values.copy_to_vec();
+        a.iter().zip(b.iter()).map(|(a, b)| a * b).sum()
     }
     pub fn abs_max(&self, a: &Grid<f32>) -> f32 {
-        let tmp = self
-            .device
-            .create_buffer_from_fn::<f32>(256, |_| 0.0)
-            .unwrap();
-        self.abs_max_kernel
-            .as_ref()
-            .unwrap()
-            .dispatch([a.res[0] * a.res[1] * a.res[2], 1, 1], &a.values, &tmp)
-            .unwrap();
-        *tmp.copy_to_vec()
+        // let tmp = self
+        //     .device
+        //     .create_buffer_from_fn::<f32>(PAR_REDUCE_BLOCK_SIZE, |_| 0.0)
+        //     .unwrap();
+        // self.abs_max_kernel
+        //     .as_ref()
+        //     .unwrap()
+        //     .dispatch([a.res[0] * a.res[1] * a.res[2], 1, 1], &a.values, &tmp)
+        //     .unwrap();
+        // *tmp.copy_to_vec()
+        //     .iter()
+        //     .max_by(|a, b| a.partial_cmp(b).unwrap())
+        //     .unwrap()
+        a.values
+            .copy_to_vec()
             .iter()
+            .map(|x| x.abs())
             .max_by(|a, b| a.partial_cmp(b).unwrap())
             .unwrap()
     }
     pub fn add_scaled(&self, k: f32, a: &Grid<f32>, out: &Grid<f32>) {
+        assert_eq!(a.res, out.res);
         let k = self.device.create_buffer_from_slice(&[k]).unwrap();
         self.add_scaled_kernel
             .as_ref()
@@ -605,17 +644,18 @@ impl Simulation {
     }
     // solve Px = b
     pub fn apply_preconditioner(&self) {
-        let use_ipp = true;
-        if !use_ipp {
-            // first try identity
-            self.pcg_r.values.copy_to_buffer(&self.pcg_z.values);
-        } else {
-            // then try incomplete poisson
-            self.incomplete_poission_kernel
-                .as_ref()
-                .unwrap()
-                .dispatch(self.pcg_r.res)
-                .unwrap();
+        match self.settings.preconditioner {
+            Preconditioner::Identity => {
+                self.pcg_r.values.copy_to_buffer(&self.pcg_z.values);
+            }
+            Preconditioner::IncompletePoisson => {
+                self.incomplete_poission_kernel
+                    .as_ref()
+                    .unwrap()
+                    .dispatch(self.pcg_r.res)
+                    .unwrap();
+            }
+            _ => todo!(),
         }
     }
     pub fn advect_particle(&self, dt: &Buffer<f32>) {
@@ -649,16 +689,23 @@ impl Simulation {
     pub fn pressure_pcg_solver(&self) -> Option<u32> {
         let settings = self.control.copy_to_vec()[0];
         self.div_velocity.values.copy_to_buffer(&self.pcg_r.values);
+        // let div_v = self.div_velocity.values.copy_to_vec();
+        // dbg!(&div_v);
+        // dbg!(div_v.len());
         self.r_eq_r_sub_A_x();
         let residual = self.abs_max(&self.pcg_r);
+        dbg!(residual);
         if residual < settings.tolerance {
             return Some(0);
         }
+        let tol = settings.tolerance * residual;
+        self.apply_preconditioner();
         let mut rho = self.dot(&self.pcg_r, &self.pcg_z);
+        dbg!(rho);
         if rho == 0.0 || rho.is_nan() {
             return None;
         }
-        self.apply_preconditioner();
+
         self.pcg_z.values.copy_to_buffer(&self.pcg_s.values);
         for i in 0..settings.max_iterations {
             self.z_eq_A_s();
@@ -666,7 +713,8 @@ impl Simulation {
             self.add_scaled(alpha, &self.pcg_s, &self.p);
             self.add_scaled(-alpha, &self.pcg_z, &self.pcg_r);
             let residual = self.abs_max(&self.pcg_r);
-            if residual < settings.tolerance {
+            dbg!(i, residual);
+            if residual < tol {
                 return Some(i + 1);
             }
             self.apply_preconditioner();

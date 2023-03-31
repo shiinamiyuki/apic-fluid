@@ -71,7 +71,7 @@ impl<T: Value> Grid<T> {
             assert_eq!(res[2], 1);
         }
         let values = device
-            .create_buffer::<T>((res[0] * res[1] * res[2]) as usize * dimension)
+            .create_buffer::<T>((res[0] * res[1] * res[2]) as usize)
             .unwrap();
         Self {
             dimension,
@@ -123,12 +123,6 @@ impl<T: Value> Grid<T> {
         assert(!self.oob(p.int()));
         let index = self.linear_index(p);
         self.values.var().write(index, v);
-    }
-    pub fn write(&self, p: Expr<Uint3>, v: Expr<T>) {
-        let oob = self.oob(p.int());
-        let linear_index = self.linear_index(p);
-        assert(!oob);
-        self.values.var().write(linear_index, v);
     }
     pub fn pos_f_to_i(&self, p: Expr<Float3>) -> Expr<Int3> {
         let p = (p - make_float3(self.origin[0], self.origin[1], self.origin[2])) / self.dx;
@@ -221,14 +215,14 @@ impl Grid<f32> {
                 const_(0.0f32)
             }, else{
                 let index = self.linear_index(p.uint());
-            self.values.var().read(index)
+                self.values.var().read(index)
             })
         } else {
             if_!(oob, {
                 const_(0.0f32)
             }, else{
                 let index = self.linear_index(p.uint());
-            self.values.var().read(index)
+                self.values.var().read(index)
             })
         }
     }

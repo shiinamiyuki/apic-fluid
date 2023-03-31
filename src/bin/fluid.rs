@@ -1,4 +1,36 @@
-use apic_fluid::*;
+use std::env::current_exe;
+
+use apic_fluid::{fluid::*, *, sparse::test_sparse2};
+use luisa::init_logger;
+use rand::*;
+
+fn test_solve() {
+    init_logger();
+    let ctx = Context::new(current_exe().unwrap());
+    let device = ctx.create_cpu_device().unwrap();
+    let mut sim = Simulation::new(
+        device.clone(),
+        SimulationSettings {
+            dt: 0.01,
+            max_iterations: 1024,
+            tolerance: 1e-4,
+            res: [512, 512, 1],
+            h: 1.0,
+            dimension: 2,
+            transfer: ParticleTransfer::Pic,
+            advect: VelocityIntegration::RK3,
+            preconditioner: Preconditioner::Identity,
+        },
+    );
+    sim.particles_vec = vec![Particle::default(); 100];
+    let mut rng = thread_rng();
+    sim.u.values.fill_fn(|_| rng.gen::<f32>() * 2.0 - 1.0);
+    sim.v.values.fill_fn(|_| rng.gen::<f32>() * 2.0 - 1.0);
+    sim.commit();
+    println!("committed");
+    sim.solve_pressure();
+}
 fn main() {
-    sparse::test_sparse();
+    test_solve();
+    // test_sparse2();
 }

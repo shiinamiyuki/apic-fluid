@@ -45,8 +45,8 @@ pub struct PcgSolver {
     z: Vector,
     n: usize,
     s: Vector,
-    max_iterations: usize,
-    tol: f32,
+    pub max_iterations: usize,
+    pub tol: f32,
 }
 
 impl PcgSolver {
@@ -65,10 +65,11 @@ impl PcgSolver {
         if residual < self.tol {
             return Some(0);
         }
+        let tol = self.tol * residual;
         let precond = P::precompute(A);
         precond.apply(&self.r, &self.z);
-        println!("{}", self.r.to_numpy("r"));
-        println!("{}", self.z.to_numpy("z"));
+        // println!("{}", self.r.to_numpy("r"));
+        // println!("{}", self.z.to_numpy("z"));
         let mut rho = self.r.dot(&self.z);
         if rho == 0.0 || rho.is_nan() {
             return None;
@@ -82,8 +83,8 @@ impl PcgSolver {
             x.add_scaled(alpha, &self.s);
             self.r.add_scaled(-alpha, &self.z);
             let residual = self.r.abs_max();
-            dbg!(residual);
-            if residual < self.tol {
+            dbg!(i, residual);
+            if residual < tol {
                 return Some(i + 1);
             }
             precond.apply(&self.r, &self.z);

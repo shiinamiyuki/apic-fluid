@@ -16,6 +16,11 @@ indicatif = "0.17.2"
 lazy_static = "1.4.0"
 rayon = "1.6.0"
 parking_lot = "0.12.1"
+libloading = "0.7.4"
+
+
+[build-dependencies]
+cmake = "0.1.50"
 
 [[bin]]
 name = "fluid"

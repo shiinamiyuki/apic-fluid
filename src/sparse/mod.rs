@@ -1,6 +1,7 @@
 use std::{cmp::Ordering, collections::HashMap, env::current_exe};
 
 use parking_lot::RwLock;
+use rand::{thread_rng, Rng};
 
 use crate::{
     sparse::solver::{DiagJacobiPreconditioner, IdentityPreconditioner, PcgSolver},
@@ -378,4 +379,48 @@ pub fn test_sparse() {
         .solve::<DiagJacobiPreconditioner>(&A, &b, &out)
         .unwrap();
     println!("{}", out.to_numpy("out"));
+}
+
+pub fn test_sparse2() {
+    let mut rng = thread_rng();
+    let ctx = Context::new(current_exe().unwrap());
+    let device = ctx.create_cpu_device().unwrap();
+    let mut triplets = Vec::new();
+    let n = 16;
+    let h = 0.01;
+    for i in 0..n {
+        for j in 0..n {
+            triplets.push(Triplet::new(i + j * n, i + j * n, -4.0 / (h * h)));
+            if i > 0 {
+                triplets.push(Triplet::new(i + j * n, i + j * n - 1, 1.0 / (h * h)));
+            }
+            if j > 0 {
+                triplets.push(Triplet::new(i + j * n, i + (j - 1) * n, 1.0 / (h * h)));
+            }
+            if i < n - 1 {
+                triplets.push(Triplet::new(i + j * n, i + j * n + 1, 1.0 / (h * h)));
+            }
+            if j < n - 1 {
+                triplets.push(Triplet::new(i + j * n, i + (j + 1) * n, 1.0 / (h * h)));
+            }
+        }
+    }
+    let A = SparseMatrix::from_triplets(device.clone(), (n * n) as usize, triplets);
+    let b = Vector::new(device.clone(), (n * n) as usize);
+    let x = Vector::from_slice(
+        device.clone(),
+        &(0..n * n).map(|_| (rng.gen::<f32>() * 2.0 - 1.0)*100.0).collect::<Vec<f32>>(),
+    );
+    A.multiply(&x, &b);
+    // println!("{}", A.to_numpy("A"));
+    // println!("{}", x.to_numpy("x"));
+    // println!("{}", b.to_numpy("b"));
+    let mut solver = PcgSolver::new(device.clone(), (n * n) as usize);
+    solver.max_iterations = 1024;
+    solver.tol = 1e-4;
+    let out = Vector::new(device.clone(), (n * n) as usize);
+    solver
+        .solve::<DiagJacobiPreconditioner>(&A, &b, &out)
+        .unwrap();
+    // println!("{}", out.to_numpy("out"));
 }
