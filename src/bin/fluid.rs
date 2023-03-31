@@ -1,6 +1,6 @@
 use std::env::current_exe;
 
-use apic_fluid::{fluid::*, *};
+use apic_fluid::{fluid::*, *, pcgsolver::Preconditioner};
 use luisa::init_logger;
 use rand::*;
 
@@ -11,10 +11,10 @@ fn test_solve() {
     let mut sim = Simulation::new(
         device.clone(),
         SimulationSettings {
-            dt: 0.01,
+            dt: 1.0,
             max_iterations: 1024,
             tolerance: 1e-4,
-            res: [4, 4, 1],
+            res: [512, 512, 1],
             h: 1.0,
             dimension: 2,
             transfer: ParticleTransfer::Pic,

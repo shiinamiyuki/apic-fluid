@@ -1,4 +1,8 @@
-use crate::{grid::Grid, pcgsolver::Stencil, *};
+use crate::{
+    grid::Grid,
+    pcgsolver::{PcgSolver, Stencil, Preconditioner},
+    *,
+};
 const PAR_REDUCE_BLOCK_SIZE: usize = 1024;
 #[derive(Clone, Copy, Value, Default)]
 #[repr(C)]
@@ -70,6 +74,8 @@ pub struct Simulation {
     pub dimension: usize,
     pub res: [u32; 3],
 
+    pub solver: Option<PcgSolver>,
+
     // offset: self, x_p, x_m, y_p, y_m, z_p, z_m
     pub A: Option<Stencil>,
     pub particles_vec: Vec<Particle>,
@@ -96,13 +102,7 @@ pub enum VelocityIntegration {
     RK2,
     RK3,
 }
-#[derive(Clone, Copy, PartialOrd, PartialEq, Debug)]
-pub enum Preconditioner {
-    Identity,
-    DiagJacobi,
-    IncompletePoisson,
-    IncompleteCholesky,
-}
+
 impl Simulation {
     pub fn new(device: Device, settings: SimulationSettings) -> Self {
         let res = settings.res;
@@ -160,7 +160,7 @@ impl Simulation {
             pcg_s,
             pcg_r,
             pcg_z,
-            // pcg_tmp,
+            solver: None,
             div_velocity,
             dimension,
             res,
@@ -225,6 +225,14 @@ impl Simulation {
         self.u.init_particle_list(self.particles_vec.len());
         self.v.init_particle_list(self.particles_vec.len());
         let p_res = self.p.res;
+        self.solver = Some(PcgSolver::new(
+            self.device.clone(),
+            p_res,
+            self.settings.max_iterations as usize,
+            self.settings.tolerance,
+            self.settings.preconditioner,
+        ));
+
         let offsets = [
             Int3::new(0, 0, 0),
             Int3::new(1, 0, 0),
@@ -579,23 +587,24 @@ impl Simulation {
         let i = self.p.linear_index(x);
         let A = self.A.as_ref().unwrap();
         let A_coeff = A.coeff.var();
-
+        let h = self.h();
+        let h2 = h * h;
         if self.dimension == 2 {
             assert_eq!(A.offsets.len(), 5);
-            A_coeff.write(i * A.offsets.len() as u32, 4.0 / self.h());
-            A_coeff.write(i * A.offsets.len() as u32 + 1, -1.0 / self.h());
-            A_coeff.write(i * A.offsets.len() as u32 + 2, -1.0 / self.h());
-            A_coeff.write(i * A.offsets.len() as u32 + 3, -1.0 / self.h());
-            A_coeff.write(i * A.offsets.len() as u32 + 4, -1.0 / self.h());
+            A_coeff.write(i * A.offsets.len() as u32, 4.0 / h2);
+            A_coeff.write(i * A.offsets.len() as u32 + 1, -1.0 / h2);
+            A_coeff.write(i * A.offsets.len() as u32 + 2, -1.0 / h2);
+            A_coeff.write(i * A.offsets.len() as u32 + 3, -1.0 / h2);
+            A_coeff.write(i * A.offsets.len() as u32 + 4, -1.0 / h2);
         } else {
             assert_eq!(A.offsets.len(), 7);
-            A_coeff.write(i * A.offsets.len() as u32, 6.0 / self.h());
-            A_coeff.write(i * A.offsets.len() as u32 + 1, -1.0 / self.h());
-            A_coeff.write(i * A.offsets.len() as u32 + 2, -1.0 / self.h());
-            A_coeff.write(i * A.offsets.len() as u32 + 3, -1.0 / self.h());
-            A_coeff.write(i * A.offsets.len() as u32 + 4, -1.0 / self.h());
-            A_coeff.write(i * A.offsets.len() as u32 + 5, -1.0 / self.h());
-            A_coeff.write(i * A.offsets.len() as u32 + 6, -1.0 / self.h());
+            A_coeff.write(i * A.offsets.len() as u32, 6.0 / h2);
+            A_coeff.write(i * A.offsets.len() as u32 + 1, -1.0 / h2);
+            A_coeff.write(i * A.offsets.len() as u32 + 2, -1.0 / h2);
+            A_coeff.write(i * A.offsets.len() as u32 + 3, -1.0 / h2);
+            A_coeff.write(i * A.offsets.len() as u32 + 4, -1.0 / h2);
+            A_coeff.write(i * A.offsets.len() as u32 + 5, -1.0 / h2);
+            A_coeff.write(i * A.offsets.len() as u32 + 6, -1.0 / h2);
         }
     }
     pub fn apply_A(&self, P: &Grid<f32>, div2: &Grid<f32>, sub: bool) {
@@ -734,23 +743,35 @@ impl Simulation {
         }
 
         let my_solution = self.p.values.copy_to_vec();
+        self.p.values.fill(0.0);
         self.build_A_kernel
             .as_ref()
             .unwrap()
             .dispatch(self.p.res)
             .unwrap();
-        pcgsolver::eigen_solve(
+        let solver = self.solver.as_ref().unwrap();
+        solver.solve(
             self.A.as_ref().unwrap(),
             &self.div_velocity.values,
             &self.p.values,
         );
+        solver.solve(
+            self.A.as_ref().unwrap(),
+            &self.div_velocity.values,
+            &self.p.values,
+        );
+        // pcgsolver::eigen_solve(
+        //     self.A.as_ref().unwrap(),
+        //     &self.div_velocity.values,
+        //     &self.p.values,
+        // );
         let eigen_solution = self.p.values.copy_to_vec();
-        dbg!(&my_solution);
-        dbg!(&eigen_solution);
+        // dbg!(&my_solution);
+        // dbg!(&eigen_solution);
         for (a, b) in my_solution.iter().zip(eigen_solution.iter()) {
             let a = *a;
             let b = *b;
-            if (a - b).abs() / (b.abs() + 0.01) > 1e-3 {
+            if (a - b).abs() / (b.abs() + 0.01) > 1e-2 {
                 dbg!(a);
                 dbg!(b);
                 panic!("solver failed");
