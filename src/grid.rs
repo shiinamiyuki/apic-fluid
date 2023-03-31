@@ -83,7 +83,7 @@ impl<T: Value> Grid<T> {
     pub fn init_particle_list(&mut self, count: usize) {
         self.cell_particle_list = Some(CellParticleList::new(self.device.clone(), count));
     }
-    pub fn linear_index(&self, p: Expr<UVec3>) -> Expr<u32> {
+    pub fn linear_index(&self, p: Expr<Uint3>) -> Expr<u32> {
         assert(!self.oob(p.int()));
         let p = p.clamp(
             make_uint3(0, 0, 0),
@@ -95,28 +95,28 @@ impl<T: Value> Grid<T> {
             p.x() + p.y() * const_(self.res[0]) + p.z() * const_(self.res[0] * self.res[1])
         }
     }
-    pub fn oob(&self, p: Expr<IVec3>) -> Bool {
+    pub fn oob(&self, p: Expr<Int3>) -> Bool {
         if self.dimension == 2 {
-            let oob = p.xy().cmplt(IVec2Expr::zero())
+            let oob = p.xy().cmplt(Int2Expr::zero())
                 | p.xy().cmpge(make_uint2(self.res[0], self.res[1]).int());
             oob.any()
         } else {
             let oob = p.cmpge(make_uint3(self.res[0], self.res[1], self.res[2]).int())
-                | p.cmpge(IVec3Expr::zero());
+                | p.cmpge(Int3Expr::zero());
             oob.any()
         }
     }
-    pub fn at_index(&self, p: Expr<UVec3>) -> Expr<T> {
+    pub fn at_index(&self, p: Expr<Uint3>) -> Expr<T> {
         assert(!self.oob(p.int()));
         let index = self.linear_index(p);
         self.values.var().read(index)
     }
-    pub fn set_index(&self, p: Expr<UVec3>, v: Expr<T>) {
+    pub fn set_index(&self, p: Expr<Uint3>, v: Expr<T>) {
         assert(!self.oob(p.int()));
         let index = self.linear_index(p);
         self.values.var().write(index, v);
     }
-    pub fn add_to_cell(&self, p: Expr<Vec3>, i: Expr<u32>) {
+    pub fn add_to_cell(&self, p: Expr<Float3>, i: Expr<u32>) {
         let oob = self.oob(p.int());
         let linear_index = self.linear_index(p.uint());
         if_!(!oob, {
@@ -126,7 +126,7 @@ impl<T: Value> Grid<T> {
                 .append(linear_index, i);
         });
     }
-    pub fn for_each_particle_in_cell(&self, cell: Expr<UVec3>, f: impl FnOnce(Expr<u32>)) {
+    pub fn for_each_particle_in_cell(&self, cell: Expr<Uint3>, f: impl FnOnce(Expr<u32>)) {
         let index = self.linear_index(cell);
         self.cell_particle_list
             .as_ref()
@@ -136,7 +136,7 @@ impl<T: Value> Grid<T> {
 }
 
 impl Grid<f32> {
-    pub fn bilinear(&self, p: Expr<Vec3>) -> Expr<f32> {
+    pub fn bilinear(&self, p: Expr<Float3>) -> Expr<f32> {
         if self.dimension == 2 {
             let p = p - make_float3(self.shift[0], self.shift[1], 0.0);
             let ip = p.floor().int();
@@ -153,20 +153,20 @@ impl Grid<f32> {
             todo!()
         }
     }
-    pub fn at_index_or_zero(&self, p: Expr<IVec3>) -> Expr<f32> {
+    pub fn at_index_or_zero(&self, p: Expr<Int3>) -> Expr<f32> {
         let oob = self.oob(p);
         if self.dimension == 2 {
             if_!(oob, {
                 const_(0.0f32)
             }, else{
-                let index = self.linear_index(p.as_uvec3());
+                let index = self.linear_index(p.uint());
             self.values.var().read(index)
             })
         } else {
             if_!(oob, {
                 const_(0.0f32)
             }, else{
-                let index = self.linear_index(p.as_uvec3());
+                let index = self.linear_index(p.uint());
             self.values.var().read(index)
             })
         }

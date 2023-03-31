@@ -6,20 +6,22 @@ use crate::{
 #[derive(Clone, Copy, Value)]
 #[repr(C)]
 pub struct Particle {
-    pub pos: Vec3,
-    pub vel: Vec3,
+    pub pos: Float3,
+    pub vel: Float3,
     pub mass: f32,
+    pub radius: f32,
 }
 pub mod cell_type {
     pub const FLUID: u32 = 0;
     pub const SOLID: u32 = 1;
 }
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy)]
 pub enum ParticleTransfer {
     None,
-    PIC,
-    FLIP,
-    APIC,
+    Pic,
+    Flip,
+    PicFlip(f32),
+    Apic,
 }
 
 #[derive(Clone, Copy, Value)]
@@ -43,7 +45,7 @@ pub struct Simulation {
     // pub pcg_tmp: Grid<f32>,
     pub div_velocity: Grid<f32>,
 
-    // pub debug_velocity: Grid<Vec3>,
+    // pub debug_velocity: Grid<Float3>,
     pub dimension: usize,
     pub res: [u32; 3],
     pub solver: PcgSolver,
@@ -140,7 +142,7 @@ impl Simulation {
     pub fn h(&self) -> Expr<f32> {
         self.settings.var().read(0).h()
     }
-    pub fn velocity(&self, p: Expr<Vec3>) -> Expr<Vec3> {
+    pub fn velocity(&self, p: Expr<Float3>) -> Expr<Float3> {
         if self.dimension == 2 {
             let u = self.u.bilinear(p / self.h());
             let v = self.v.bilinear(p / self.h());
@@ -154,10 +156,10 @@ impl Simulation {
     }
     pub fn integrate_velocity(
         &self,
-        p: Expr<Vec3>,
+        p: Expr<Float3>,
         dt: Expr<f32>,
         scheme: VelocityIntegration,
-    ) -> Expr<Vec3> {
+    ) -> Expr<Float3> {
         match scheme {
             VelocityIntegration::Euler => p + self.velocity(p) * dt,
             VelocityIntegration::RK2 => {

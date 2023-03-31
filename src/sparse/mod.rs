@@ -1,9 +1,9 @@
-use std::{cmp::Ordering, collections::HashMap};
+use std::{cmp::Ordering, collections::HashMap, env::current_exe};
 
 use parking_lot::RwLock;
 
 use crate::{
-    sparse::solver::{IdentityPreconditioner, PcgSolver, DiagJacobiPreconditioner},
+    sparse::solver::{DiagJacobiPreconditioner, IdentityPreconditioner, PcgSolver},
     *,
 };
 pub mod solver;
@@ -354,9 +354,8 @@ impl SparseKernels {
 }
 #[allow(non_snake_case)]
 pub fn test_sparse() {
-    init();
-    init_logger();
-    let device = create_cpu_device().unwrap();
+    let ctx = Context::new(current_exe().unwrap());
+    let device = ctx.create_cpu_device().unwrap();
     let mut triplets = Vec::new();
     triplets.push(Triplet::new(0, 0, 4.0));
     triplets.push(Triplet::new(1, 1, 5.0));
