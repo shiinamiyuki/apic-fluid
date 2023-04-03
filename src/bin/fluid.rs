@@ -16,6 +16,7 @@ fn test_solve() {
             tolerance: 1e-4,
             res: [512, 512, 1],
             h: 1.0,
+            rho:1.0,
             dimension: 2,
             transfer: ParticleTransfer::Pic,
             advect: VelocityIntegration::RK3,

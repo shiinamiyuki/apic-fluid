@@ -1,3 +1,0 @@
-[submodule "eigen_pcgsolver/eigen"]
-	path = eigen_pcgsolver/eigen
-	url = https://gitlab.com/libeigen/eigen.git

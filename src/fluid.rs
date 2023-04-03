@@ -9,7 +9,6 @@ use crate::{
 pub struct Particle {
     pub pos: Float3,
     pub vel: Float3,
-    pub mass: f32,
     pub radius: f32,
 
     pub c_x: Float3,
@@ -30,13 +29,14 @@ pub enum ParticleTransfer {
 
 #[derive(Clone, Copy, Value)]
 #[repr(C)]
-pub struct ControlData {
+pub struct State {
     pub h: f32,
     // modified for CFL condition
     pub dt: f32,
     pub max_dt: f32,
     pub max_iterations: u32,
     pub tolerance: f32,
+    pub rho: f32,
 }
 #[derive(Clone, Copy)]
 pub struct SimulationSettings {
@@ -45,6 +45,7 @@ pub struct SimulationSettings {
     pub tolerance: f32,
     pub res: [u32; 3],
     pub h: f32,
+    pub rho: f32,
     pub dimension: usize,
     pub transfer: ParticleTransfer,
     pub advect: VelocityIntegration,
@@ -57,6 +58,11 @@ pub struct Simulation {
     pub u: Grid<f32>,
     pub v: Grid<f32>,
     pub w: Grid<f32>,
+
+    // fluid mass center at velocity samples
+    pub mass_u: Grid<f32>,
+    pub mass_v: Grid<f32>,
+    pub mass_w: Grid<f32>,
 
     pub tmp_u: Grid<f32>,
     pub tmp_v: Grid<f32>,
@@ -81,6 +87,7 @@ pub struct Simulation {
     advect_particle_kernel: Option<Kernel<(f32,)>>,
     apply_gravity_kernel: Option<Kernel<(f32,)>>,
     build_A_kernel: Option<Kernel<()>>,
+    build_linear_system_kernel: Option<Kernel<()>>,
     compute_phi_kernel: Option<Kernel<()>>,
     div_velocity_kernel: Option<Kernel<()>>,
     build_particle_list_kernel: Option<Kernel<()>>,
@@ -88,9 +95,10 @@ pub struct Simulation {
     grid_to_particle_kernel: Option<Kernel<()>>,
     velocity_update_kernel: Option<Kernel<(f32,)>>,
     compute_cfl_kernel: Option<Kernel<(Buffer<f32>,)>>,
+    fluid_mass_kernel: Option<Kernel<()>>,
     zero_kernel: Kernel<(Buffer<f32>,)>,
     pub device: Device,
-    pub control: Buffer<ControlData>,
+    state: State,
     cfl_tmp: Buffer<f32>,
 }
 #[derive(Clone, Copy, PartialOrd, PartialEq, Debug)]
@@ -113,6 +121,10 @@ impl Simulation {
         let v = Grid::new(device.clone(), v_res, dimension, [0.0, -0.5 * h, 0.0], h);
         let w = Grid::new(device.clone(), w_res, dimension, [0.0, 0.0, -0.5 * h], h);
 
+        let mass_u = Grid::new(device.clone(), u_res, dimension, [-0.5 * h, 0.0, 0.0], h);
+        let mass_v = Grid::new(device.clone(), v_res, dimension, [0.0, -0.5 * h, 0.0], h);
+        let mass_w = Grid::new(device.clone(), w_res, dimension, [0.0, 0.0, -0.5 * h], h);
+
         let tmp_u = Grid::new(device.clone(), u_res, dimension, [-0.5 * h, 0.0, 0.0], h);
         let tmp_v = Grid::new(device.clone(), v_res, dimension, [0.0, -0.5 * h, 0.0], h);
         let tmp_w = Grid::new(device.clone(), w_res, dimension, [0.0, 0.0, -0.5 * h], h);
@@ -131,15 +143,6 @@ impl Simulation {
         let p = make_pressure_grid();
         // let pcg_tmp = make_pressure_grid();
         let div_velocity = make_pressure_grid();
-        let control = device
-            .create_buffer_from_slice(&[ControlData {
-                h,
-                max_dt: dt,
-                dt,
-                max_iterations: settings.max_iterations,
-                tolerance: settings.tolerance,
-            }])
-            .unwrap();
         let zero_kernel = device
             .create_kernel_async::<(Buffer<f32>,)>(&|buf: BufferVar<f32>| {
                 let i = dispatch_id().x();
@@ -156,6 +159,9 @@ impl Simulation {
             u,
             v,
             w,
+            mass_u,
+            mass_v,
+            mass_w,
             tmp_u,
             tmp_v,
             tmp_w,
@@ -168,6 +174,7 @@ impl Simulation {
             A: None,
             compute_phi_kernel: None,
             build_A_kernel: None,
+            build_linear_system_kernel: None,
             particles_vec: Vec::new(),
             particles: None,
             apply_gravity_kernel: None,
@@ -178,14 +185,23 @@ impl Simulation {
             grid_to_particle_kernel: None,
             velocity_update_kernel: None,
             compute_cfl_kernel: None,
+            fluid_mass_kernel: None,
             cfl_tmp: device.create_buffer(1024).unwrap(),
             device: device.clone(),
             zero_kernel,
-            control,
+            state: State {
+                h,
+                rho: settings.rho,
+                max_dt: dt,
+                dt,
+                max_iterations: settings.max_iterations,
+                tolerance: settings.tolerance,
+            },
         }
     }
     pub fn h(&self) -> Expr<f32> {
-        self.control.var().read(0).h()
+        // self.control.var().read(0).h()
+        const_(self.state.h)
     }
     pub fn velocity(&self, p: Expr<Float3>) -> Expr<Float3> {
         if self.dimension == 2 {
@@ -383,7 +399,20 @@ impl Simulation {
                 })
                 .unwrap(),
         );
-
+        self.build_linear_system_kernel = Some(
+            self.device
+                .create_kernel_async::<()>(&|| {
+                    self.build_linear_system_impl();
+                })
+                .unwrap(),
+        );
+        self.fluid_mass_kernel = Some(
+            self.device
+                .create_kernel_async::<()>(&|| {
+                    self.compute_fluid_mass_impl();
+                })
+                .unwrap(),
+        );
         self.div_velocity_kernel = Some(
             self.device
                 .create_kernel_async::<()>(&|| {
@@ -424,14 +453,13 @@ impl Simulation {
         let apic_weight = apic_weight / weight_sum;
 
         let cell_pos = g.pos_i_to_f(cell_idx.int());
-        let pic_flip_mv = var!(f32); // momentum
-        let apic_flip_mv = var!(f32); // momentum
+        let pic_flip_v = var!(f32); // momentum
+        let apic_flip_v = var!(f32); // momentum
 
         let m = var!(f32); // mass
 
         g.for_each_particle_in_neighbor(cell_idx, |pt_idx| {
             let pt = particles.var().read(pt_idx);
-            let m_p = pt.mass();
             let v_p = pt.vel();
             let offset = (pt.pos() - cell_pos) / g.dx;
             let w_p = trilinear_weight(offset, self.dimension);
@@ -449,15 +477,14 @@ impl Simulation {
                 _ => unreachable!(),
             };
 
-            pic_flip_mv.store(pic_flip_mv.load() + v_pa * m_p * w_p);
+            pic_flip_v.store(pic_flip_v.load() + v_pa * w_p);
 
-            apic_flip_mv
-                .store(apic_flip_mv.load() + m_p * w_p * (v_pa + c_pa.dot(cell_pos - pt.pos())));
-            m.store(m.load() + m_p * w_p);
+            apic_flip_v.store(apic_flip_v.load() + w_p * (v_pa + c_pa.dot(cell_pos - pt.pos())));
+            m.store(m.load() + w_p);
         });
 
-        let pic_flip_v = pic_flip_mv.load() / m.load();
-        let apic_flip_v = apic_flip_mv.load() / m.load();
+        let pic_flip_v = pic_flip_v.load();
+        let apic_flip_v = apic_flip_v.load();
         // TODO: check this
         let final_v = (pic_weight + flip_weight) * pic_flip_v + apic_weight * apic_flip_v;
         g.set_index(cell_idx, final_v);
@@ -539,8 +566,67 @@ impl Simulation {
         // cpu_dbg!(d);
         div.set_index(x, d);
     }
-
-    pub fn build_A_impl(&self) {
+    fn compute_fluid_mass_impl(&self) {
+        let x = dispatch_id();
+        let unit_mass = self.state.rho
+            * if self.dimension == 2 {
+                self.h() * self.h()
+            } else {
+                self.h() * self.h() * self.h()
+            };
+        let map = |u: &Grid<f32>, mass_u: &Grid<f32>, axis: usize| {
+            if_!(!self.u.oob(x.int()), {
+                let x_a = x.at(axis);
+                let mass = if_!(x_a.cmpeq(0) | x_a.cmpeq(u.res[axis]-1), {
+                    const_(0.0f32)
+                }, else {
+                    if_!(x.cmpeq(0).any() | x.cmpeq(make_uint3(u.res[0], u.res[1], u.res[2])-1).any(), {
+                        const_(0.5f32)
+                    }, else {
+                        const_(1.0f32)
+                    })
+                });
+                mass_u.set_index(x, mass * unit_mass);
+            });
+        };
+        map(&self.u, &self.mass_u, 0);
+        map(&self.v, &self.mass_v, 1);
+        if self.dimension == 3 {
+            map(&self.w, &self.mass_w, 2);
+        }
+    }
+    fn build_linear_system_impl(&self) {
+        let x = dispatch_id();
+        let i = self.p.linear_index(x);
+        let A = self.A.as_ref().unwrap();
+        let A_coeff = A.coeff.var();
+        let h = self.h();
+        let h2 = h * h;
+        let diag = var!(f32);
+        let rhs = var!(f32);
+        let phi_x = self.liquid_phi.at_index(x);
+        let compute_stencil = |offset_idx: u32| {
+            let offset = A.offsets.var().read(offset_idx);
+            let y = x.int() + offset;
+            if_!(!self.liquid_phi.oob(y), {
+                let phi_y = self.liquid_phi.at_index(y.uint());
+                let alpha = self.free_surface_alpha(phi_x, phi_y);
+            });
+        };
+        if self.dimension == 2 {
+            assert_eq!(A.offsets.len(), 5);
+            for j in 1..5 {
+                compute_stencil(j);
+            }
+        } else {
+            assert_eq!(A.offsets.len(), 7);
+            for j in 1..7 {
+                compute_stencil(j);
+            }
+        }
+        A_coeff.write(i * A.offsets.len() as u32, diag.load());
+    }
+    fn build_A_impl(&self) {
         let x = dispatch_id();
         let i = self.p.linear_index(x);
         let A = self.A.as_ref().unwrap();
@@ -610,7 +696,7 @@ impl Simulation {
             .unwrap();
     }
     pub fn solve_pressure(&self, dt: f32) {
-        self.compute_div_velocity();
+        // self.compute_div_velocity();
 
         let solver = self.solver.as_ref().unwrap();
         let A = self.A.as_ref().unwrap();
@@ -618,7 +704,12 @@ impl Simulation {
             .zero
             .dispatch([A.coeff.len() as u32, 1, 1], &A.coeff)
             .unwrap();
-        self.build_A_kernel
+        // self.build_A_kernel
+        //     .as_ref()
+        //     .unwrap()
+        //     .dispatch(self.p.res)
+        //     .unwrap();
+        self.build_linear_system_kernel
             .as_ref()
             .unwrap()
             .dispatch(self.p.res)
@@ -666,10 +757,26 @@ impl Simulation {
             .dispatch([self.particles_vec.len() as u32, 1, 1])
             .unwrap();
     }
-    pub fn step(&self) {
-        let settings = self.control.copy_to_vec()[0];
-        let dt = settings.dt;
+    fn compute_liquid_phi(&self) {
+        self.compute_phi_kernel
+            .as_ref()
+            .unwrap()
+            .dispatch(self.p.res)
+            .unwrap();
+    }
+    fn compute_fluid_mass(&self) {
+        self.fluid_mass_kernel
+            .as_ref()
+            .unwrap()
+            .dispatch(self.res_p1)
+            .unwrap();
+    }
+    pub fn step(&mut self) {
+        self.compute_cfl();
+        let dt = self.state.dt;
         self.advect_particle(dt);
+        self.compute_liquid_phi();
+        self.compute_fluid_mass();
         self.transfer_particles_to_grid();
         self.apply_ext_forces(dt);
 
@@ -701,7 +808,7 @@ impl Simulation {
                     let grad_pressure =
                         (self.p.at_index(i.uint()) - self.p.at_index((i - off).uint())) / self.h();
                     let u_cur = u.at_index(i.uint());
-                    u.set_index(i.uint(), u_cur - dt * grad_pressure);
+                    u.set_index(i.uint(), u_cur - dt * grad_pressure / self.state.rho);
                 }, else{
                     // set component to zero
                     u.set_index(i.uint(), 0.0.into());
@@ -714,7 +821,26 @@ impl Simulation {
             update(&self.w, 2);
         }
     }
-
+    fn compute_cfl(&mut self) {
+        let s = self.device.default_stream();
+        s.with_scope(|s| {
+            s.submit([
+                self.zero_kernel
+                    .dispatch_async([self.cfl_tmp.len() as u32, 1, 1], &self.cfl_tmp),
+                self.compute_cfl_kernel
+                    .as_ref()
+                    .unwrap()
+                    .dispatch_async([self.particles_vec.len() as u32, 1, 1], &self.cfl_tmp),
+            ])
+            .unwrap()
+        });
+        let max_vel = self
+            .cfl_tmp
+            .copy_to_vec()
+            .iter()
+            .fold(0.0f32, |a, b| a.max(*b));
+        self.state.dt = self.state.max_dt.min(self.state.h / max_vel);
+    }
     pub fn dump_velocity_field_2d(&self, image_path: &str) {
         assert_eq!(self.dimension, 2);
         use exr::prelude::*;
