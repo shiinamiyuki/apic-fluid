@@ -121,6 +121,12 @@ impl<T: Value> Grid<T> {
         }
     }
     pub fn at_index(&self, p: Expr<Uint3>) -> Expr<T> {
+        if cfg!(debug_assertions) {
+            if_!(self.oob(p.int()), {
+                cpu_dbg!(p.int());
+                cpu_dbg!(make_uint3(self.res[0], self.res[1], self.res[2]));
+            });
+        }
         assert(!self.oob(p.int()));
         let index = self.linear_index(p);
         self.values.var().read(index)
@@ -197,9 +203,9 @@ impl<T: Value> Grid<T> {
 }
 
 impl Grid<f32> {
-    pub fn bilinear(&self, p: Expr<Float3>) -> Expr<f32> {
+    pub fn interpolate(&self, p: Expr<Float3>) -> Expr<f32> {
         if self.dimension == 2 {
-            let p = p - make_float3(self.origin[0], self.origin[1], 0.0);
+            let p = (p - make_float3(self.origin[0], self.origin[1], 0.0)) / self.dx;
             let ip = p.floor().int();
             let offset = p - ip.float();
             let v00 = self.at_index(ip.uint());
@@ -211,7 +217,29 @@ impl Grid<f32> {
             let v = (1.0 - offset.y()) * v0 + offset.y() * v1;
             v
         } else {
-            todo!()
+            let p = (p - make_float3(self.origin[0], self.origin[1], self.origin[2])) / self.dx;
+            let ip = p.floor().int();
+            let offset = p - ip.float();
+            let v000 = self.at_index(ip.uint());
+            let v001 = self.at_index(ip.uint() + make_uint3(1, 0, 0));
+            let v010 = self.at_index(ip.uint() + make_uint3(0, 1, 0));
+            let v011 = self.at_index(ip.uint() + make_uint3(1, 1, 0));
+
+            let v00 = (1.0 - offset.x()) * v000 + offset.x() * v001;
+            let v01 = (1.0 - offset.x()) * v010 + offset.x() * v011;
+            let v0 = (1.0 - offset.y()) * v00 + offset.y() * v01;
+
+            let v100 = self.at_index(ip.uint());
+            let v101 = self.at_index(ip.uint() + make_uint3(1, 0, 1));
+            let v110 = self.at_index(ip.uint() + make_uint3(0, 1, 1));
+            let v111 = self.at_index(ip.uint() + make_uint3(1, 1, 1));
+
+            let v10 = (1.0 - offset.x()) * v100 + offset.x() * v101;
+            let v11 = (1.0 - offset.x()) * v110 + offset.x() * v111;
+            let v1 = (1.0 - offset.y()) * v10 + offset.y() * v11;
+
+            let v = (1.0 - offset.z()) * v0 + offset.z() * v1;
+            v
         }
     }
     pub fn at_index_or_zero(&self, p: Expr<Int3>) -> Expr<f32> {

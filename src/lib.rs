@@ -2,7 +2,6 @@
 pub use luisa::prelude::*;
 pub use luisa::{derive::*, lang::*, macros::*, math::*, Buffer, Context, Device, Kernel};
 pub use luisa_compute as luisa;
-use rayon::prelude::*;
 pub mod fluid;
 pub mod grid;
 pub mod pcgsolver;

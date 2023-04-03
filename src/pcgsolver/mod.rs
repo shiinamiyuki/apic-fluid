@@ -18,6 +18,7 @@ impl Stencil {
 #[derive(Clone, Copy, PartialOrd, PartialEq, Debug)]
 pub enum Preconditioner {
     Identity,
+    DiagJacobi,
     IncompletePoisson,
 }
 pub struct PcgSolver {
@@ -29,13 +30,13 @@ pub struct PcgSolver {
     pub reduce_add_tmp: Buffer<f32>,
     pub max_iter: usize,
     pub tol: f32,
-    apply_A: Kernel<(Stencil, Buffer<f32>, Buffer<f32>, i32)>,
-    apply_preconditioner: Kernel<(Stencil, Buffer<f32>, Buffer<f32>)>,
-    dot: Kernel<(Buffer<f32>, Buffer<f32>, Buffer<f32>)>,
-    reduce_abs_max: Kernel<(Buffer<f32>, Buffer<f32>)>,
-    zero: Kernel<(Buffer<f32>,)>,
-    add_scaled: Kernel<(f32, Buffer<f32>, Buffer<f32>)>,
-    n: [u32; 3],
+    pub apply_A: Kernel<(Stencil, Buffer<f32>, Buffer<f32>, i32)>,
+    pub apply_preconditioner: Kernel<(Stencil, Buffer<f32>, Buffer<f32>)>,
+    pub dot: Kernel<(Buffer<f32>, Buffer<f32>, Buffer<f32>)>,
+    pub reduce_abs_max: Kernel<(Buffer<f32>, Buffer<f32>)>,
+    pub zero: Kernel<(Buffer<f32>,)>,
+    pub add_scaled: Kernel<(f32, Buffer<f32>, Buffer<f32>)>,
+    pub n: [u32; 3],
 }
 impl PcgSolver {
     const PAR_REDUCE_BLOCK_SIZE: usize = 1024;
@@ -99,6 +100,10 @@ impl PcgSolver {
                         Preconditioner::Identity => {
                             out.write(i, x.read(i));
                         }
+                        Preconditioner::DiagJacobi => {
+                            let diag = A.coeff.read(i * noffsets);
+                            out.write(i, x.read(i) / (diag + 1e-5));
+                        }
                         Preconditioner::IncompletePoisson => {
                             let sum = var!(f32, 0.0);
                             let m = var!(f32, 1.0);
@@ -112,7 +117,10 @@ impl PcgSolver {
                                     {
                                         let p = p.uint();
                                         let ip = p.x() + p.y() * n[0] + p.z() * n[0] * n[1];
-                                        let mp = 1.0 / A.coeff.read(ip * noffsets);
+                                        if cfg!(debug_assertions) {
+                                            assert(A.coeff.read(ip * noffsets).cmpge(0.0));
+                                        }
+                                        let mp = 1.0 / (A.coeff.read(ip * noffsets) + 1e-5);
                                         sum.store(sum.load() + x.read(ip) * mp);
                                         if_!((c.load() % 1).cmpeq(0), {
                                             m.store(m.load() + mp * mp);
@@ -156,12 +164,14 @@ impl PcgSolver {
         let zero = device
             .create_kernel_async::<(Buffer<f32>,)>(&|x: BufferVar<f32>| {
                 let i = dispatch_id().x();
+                set_block_size([512, 1, 1]);
                 x.write(i, 0.0);
             })
             .unwrap();
         let add_scaled = device
             .create_kernel_async::<(f32, Buffer<f32>, Buffer<f32>)>(
                 &|a: Expr<f32>, x: BufferVar<f32>, out: BufferVar<f32>| {
+                    set_block_size([512, 1, 1]);
                     let i = dispatch_id().x();
                     out.write(i, out.read(i) + a * x.read(i));
                 },
@@ -185,7 +195,7 @@ impl PcgSolver {
             add_scaled,
         }
     }
-    pub fn dot(&self, x: &Buffer<f32>, y: &Buffer<f32>) -> f32 {
+    fn dot(&self, x: &Buffer<f32>, y: &Buffer<f32>) -> f32 {
         let s = self.device.default_stream();
         s.with_scope(|s| {
             s.submit([
@@ -200,7 +210,7 @@ impl PcgSolver {
         });
         self.reduce_add_tmp.copy_to_vec().iter().sum()
     }
-    pub fn abs_max(&self, x: &Buffer<f32>) -> f32 {
+    fn abs_max(&self, x: &Buffer<f32>) -> f32 {
         let s = self.device.default_stream();
         s.with_scope(|s| {
             s.submit([
@@ -220,7 +230,7 @@ impl PcgSolver {
             .max_by(|a, b| a.partial_cmp(b).unwrap())
             .unwrap()
     }
-    pub fn apply_A(&self, A: &Stencil, x: &Buffer<f32>, out: &Buffer<f32>, sub: bool) {
+    fn apply_A(&self, A: &Stencil, x: &Buffer<f32>, out: &Buffer<f32>, sub: bool) {
         self.apply_A
             .dispatch(
                 [x.len() as u32, 1, 1],
@@ -231,7 +241,7 @@ impl PcgSolver {
             )
             .unwrap();
     }
-    pub fn apply_preconditioner(&self, A: &Stencil, x: &Buffer<f32>, out: &Buffer<f32>) {
+    fn apply_preconditioner(&self, A: &Stencil, x: &Buffer<f32>, out: &Buffer<f32>) {
         self.apply_preconditioner
             .dispatch([x.len() as u32, 1, 1], A, x, out)
             .unwrap();

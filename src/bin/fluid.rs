@@ -1,8 +1,8 @@
 use std::env::current_exe;
 
-use apic_fluid::{fluid::*, *, pcgsolver::Preconditioner};
+use apic_fluid::{fluid::*, pcgsolver::Preconditioner, *};
 use luisa::init_logger;
-use rand::*;
+use rand::{rngs::StdRng, *};
 
 fn test_solve() {
     init_logger();
@@ -23,12 +23,12 @@ fn test_solve() {
         },
     );
     sim.particles_vec = vec![Particle::default(); 100];
-    let mut rng = thread_rng();
+    let mut rng = StdRng::seed_from_u64(0);
     sim.u.values.fill_fn(|_| rng.gen::<f32>() * 2.0 - 1.0);
     sim.v.values.fill_fn(|_| rng.gen::<f32>() * 2.0 - 1.0);
     sim.commit();
     println!("committed");
-    sim.solve_pressure();
+    sim.solve_pressure(sim.settings.dt);
 }
 fn main() {
     test_solve();

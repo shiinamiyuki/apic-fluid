@@ -1,9 +1,9 @@
 use crate::{
     grid::Grid,
-    pcgsolver::{PcgSolver, Stencil, Preconditioner},
+    pcgsolver::{PcgSolver, Preconditioner, Stencil},
     *,
 };
-const PAR_REDUCE_BLOCK_SIZE: usize = 1024;
+
 #[derive(Clone, Copy, Value, Default)]
 #[repr(C)]
 pub struct Particle {
@@ -64,10 +64,6 @@ pub struct Simulation {
 
     pub p: Grid<f32>,
 
-    pub pcg_r: Grid<f32>,
-    pub pcg_s: Grid<f32>,
-    pub pcg_z: Grid<f32>,
-    // pub pcg_tmp: Grid<f32>,
     pub div_velocity: Grid<f32>,
 
     // pub debug_velocity: Grid<Float3>,
@@ -80,21 +76,20 @@ pub struct Simulation {
     pub A: Option<Stencil>,
     pub particles_vec: Vec<Particle>,
     pub particles: Option<Buffer<Particle>>,
-    pub advect_particle_kernel: Option<Kernel<(Buffer<f32>,)>>,
-    pub apply_gravity_kernel: Option<Kernel<(Buffer<f32>,)>>,
-    pub pcg_Ax_kernel: Option<Kernel<()>>,
-    pub pcg_As_kernel: Option<Kernel<()>>,
-    pub incomplete_poission_kernel: Option<Kernel<()>>,
-    pub build_A_kernel: Option<Kernel<()>>,
-    pub div_velocity_kernel: Option<Kernel<()>>,
-    pub add_scaled_kernel: Option<Kernel<(Buffer<f32>, Buffer<f32>, Buffer<f32>)>>,
-    pub dot_kernel: Option<Kernel<(Buffer<f32>, Buffer<f32>, Buffer<f32>)>>,
-    pub abs_max_kernel: Option<Kernel<(Buffer<f32>, Buffer<f32>)>>,
-    pub build_particle_list_kernel: Option<Kernel<()>>,
-    pub particle_to_grid_kernel: Option<Kernel<()>>,
-    pub grid_to_particle_kernel: Option<Kernel<()>>,
+    advect_particle_kernel: Option<Kernel<(f32,)>>,
+    apply_gravity_kernel: Option<Kernel<(f32,)>>,
+    build_A_kernel: Option<Kernel<()>>,
+    compute_phi_kernel: Option<Kernel<()>>,
+    div_velocity_kernel: Option<Kernel<()>>,
+    build_particle_list_kernel: Option<Kernel<()>>,
+    particle_to_grid_kernel: Option<Kernel<()>>,
+    grid_to_particle_kernel: Option<Kernel<()>>,
+    velocity_update_kernel: Option<Kernel<(f32,)>>,
+    compute_cfl_kernel: Option<Kernel<(Buffer<f32>,)>>,
+    zero_kernel: Kernel<(Buffer<f32>,)>,
     pub device: Device,
     pub control: Buffer<ControlData>,
+    cfl_tmp: Buffer<f32>,
 }
 #[derive(Clone, Copy, PartialOrd, PartialEq, Debug)]
 pub enum VelocityIntegration {
@@ -109,15 +104,13 @@ impl Simulation {
         let dimension = settings.dimension;
         let h = settings.h;
         let dt = settings.dt;
-        let u = Grid::new(device.clone(), res, dimension, [0.5 * h, 0.0, 0.0], h);
-        let v = Grid::new(device.clone(), res, dimension, [0.0, 0.5 * h, 0.0], h);
-        let w = Grid::new(device.clone(), res, dimension, [0.0, 0.0, 0.5 * h], h);
+        let u = Grid::new(device.clone(), res, dimension, [-0.5 * h, 0.0, 0.0], h);
+        let v = Grid::new(device.clone(), res, dimension, [0.0, -0.5 * h, 0.0], h);
+        let w = Grid::new(device.clone(), res, dimension, [0.0, 0.0, -0.5 * h], h);
 
-        let tmp_u = Grid::new(device.clone(), res, dimension, [0.5 * h, 0.0, 0.0], h);
-        let tmp_v = Grid::new(device.clone(), res, dimension, [0.0, 0.5 * h, 0.0], h);
-        let tmp_w = Grid::new(device.clone(), res, dimension, [0.0, 0.0, 0.5 * h], h);
-
-        let liquid_phi = Grid::new(device.clone(), res, dimension, [0.0, 0.0, 0.0], h);
+        let tmp_u = Grid::new(device.clone(), res, dimension, [-0.5 * h, 0.0, 0.0], h);
+        let tmp_v = Grid::new(device.clone(), res, dimension, [0.0, -0.5 * h, 0.0], h);
+        let tmp_w = Grid::new(device.clone(), res, dimension, [0.0, 0.0, -0.5 * h], h);
 
         let make_pressure_grid = || {
             Grid::new(
@@ -132,10 +125,9 @@ impl Simulation {
                 h,
             )
         };
+        let liquid_phi = make_pressure_grid();
+
         let p = make_pressure_grid();
-        let pcg_s = make_pressure_grid();
-        let pcg_r = make_pressure_grid();
-        let pcg_z = make_pressure_grid();
         // let pcg_tmp = make_pressure_grid();
         let div_velocity = make_pressure_grid();
         let control = device
@@ -147,6 +139,12 @@ impl Simulation {
                 tolerance: settings.tolerance,
             }])
             .unwrap();
+        let zero_kernel = device
+            .create_kernel_async::<(Buffer<f32>,)>(&|buf: BufferVar<f32>| {
+                let i = dispatch_id().x();
+                buf.write(i, 0.0);
+            })
+            .unwrap();
         Self {
             settings,
             u,
@@ -157,30 +155,26 @@ impl Simulation {
             tmp_w,
             p,
             liquid_phi,
-            pcg_s,
-            pcg_r,
-            pcg_z,
             solver: None,
             div_velocity,
             dimension,
             res,
             A: None,
+            compute_phi_kernel: None,
             build_A_kernel: None,
             particles_vec: Vec::new(),
             particles: None,
-            advect_particle_kernel: None,
             apply_gravity_kernel: None,
-            pcg_Ax_kernel: None,
-            pcg_As_kernel: None,
-            incomplete_poission_kernel: None,
+            advect_particle_kernel: None,
             div_velocity_kernel: None,
-            dot_kernel: None,
-            abs_max_kernel: None,
-            add_scaled_kernel: None,
             build_particle_list_kernel: None,
             particle_to_grid_kernel: None,
             grid_to_particle_kernel: None,
-            device,
+            velocity_update_kernel: None,
+            compute_cfl_kernel: None,
+            cfl_tmp: device.create_buffer(1024).unwrap(),
+            device: device.clone(),
+            zero_kernel,
             control,
         }
     }
@@ -189,13 +183,13 @@ impl Simulation {
     }
     pub fn velocity(&self, p: Expr<Float3>) -> Expr<Float3> {
         if self.dimension == 2 {
-            let u = self.u.bilinear(p / self.h());
-            let v = self.v.bilinear(p / self.h());
+            let u = self.u.interpolate(p);
+            let v = self.v.interpolate(p);
             make_float3(u, v, 0.0)
         } else {
-            let u = self.u.bilinear(p / self.h());
-            let v = self.v.bilinear(p / self.h());
-            let w = self.w.bilinear(p / self.h());
+            let u = self.u.interpolate(p);
+            let v = self.v.interpolate(p);
+            let w = self.w.interpolate(p);
             make_float3(u, v, w)
         }
     }
@@ -222,8 +216,14 @@ impl Simulation {
     }
 
     pub fn commit(&mut self) {
+        self.particles = Some(
+            self.device
+                .create_buffer_from_slice(&self.particles_vec)
+                .unwrap(),
+        );
         self.u.init_particle_list(self.particles_vec.len());
         self.v.init_particle_list(self.particles_vec.len());
+        self.p.init_particle_list(self.particles_vec.len());
         let p_res = self.p.res;
         self.solver = Some(PcgSolver::new(
             self.device.clone(),
@@ -249,11 +249,7 @@ impl Simulation {
         } else {
             self.A = Some(Stencil::new(self.device.clone(), p_res, &offsets[..5]));
         }
-        self.particles = Some(
-            self.device
-                .create_buffer_from_slice(&self.particles_vec)
-                .unwrap(),
-        );
+
         self.build_particle_list_kernel = Some(
             self.device
                 .create_kernel_async::<()>(&|| {
@@ -265,6 +261,7 @@ impl Simulation {
                     if self.dimension == 3 {
                         self.w.add_to_cell(pt.pos(), i);
                     }
+                    self.p.add_to_cell(pt.pos(), i);
                 })
                 .unwrap(),
         );
@@ -335,13 +332,28 @@ impl Simulation {
                 })
                 .unwrap(),
         );
+        self.compute_phi_kernel = Some(
+            self.device
+                .create_kernel_async::<()>(&|| {
+                    let node = dispatch_id();
+                    let particles = self.particles.as_ref().unwrap();
+                    let phi = var!(f32, self.h() * 1e3);
+                    let node_pos = self.p.pos_i_to_f(node.int());
+                    self.p.for_each_particle_in_neighbor(node, |pt_idx| {
+                        let pt = particles.var().read(pt_idx);
+                        let new_phi = pt.pos().distance(node_pos) - pt.radius();
+                        phi.store(phi.load().min(new_phi));
+                    });
+                    self.liquid_phi.set_index(node, phi.load());
+                })
+                .unwrap(),
+        );
         self.advect_particle_kernel = Some(
             self.device
-                .create_kernel_async::<(Buffer<f32>,)>(&|dt: BufferVar<f32>| {
+                .create_kernel_async::<(f32,)>(&|dt: Expr<f32>| {
                     let i = dispatch_id().x();
                     let particles = self.particles.as_ref().unwrap();
                     let pt = particles.var().read(i);
-                    let dt = dt.read(0);
                     pt.set_pos(self.integrate_velocity(pt.pos(), dt, VelocityIntegration::RK2));
                     particles.var().write(i, pt);
                 })
@@ -349,10 +361,10 @@ impl Simulation {
         );
         self.apply_gravity_kernel = Some(
             self.device
-                .create_kernel_async::<(Buffer<f32>,)>(&|dt: BufferVar<f32>| {
+                .create_kernel_async::<(f32,)>(&|dt: Expr<f32>| {
                     let p = dispatch_id();
                     let v = self.v.at_index(p);
-                    self.v.set_index(p, v - 0.981 * dt.read(0));
+                    self.v.set_index(p, v - 0.981 * dt);
                 })
                 .unwrap(),
         );
@@ -363,63 +375,27 @@ impl Simulation {
                 })
                 .unwrap(),
         );
-        self.pcg_Ax_kernel = Some(
-            self.device
-                .create_kernel_async::<()>(&|| self.apply_A(&self.p, &self.pcg_r, true))
-                .unwrap(),
-        );
-        self.pcg_As_kernel = Some(
-            self.device
-                .create_kernel_async::<()>(&|| self.apply_A(&self.pcg_s, &self.pcg_z, false))
-                .unwrap(),
-        );
-        self.incomplete_poission_kernel = Some(
-            self.device
-                .create_kernel_async::<()>(&|| self.incomplete_poisson(&self.pcg_r, &self.pcg_z))
-                .unwrap(),
-        );
-        self.dot_kernel = Some(
-            self.device
-                .create_kernel_async::<(Buffer<f32>, Buffer<f32>, Buffer<f32>)>(
-                    &|a: BufferVar<f32>, b: BufferVar<f32>, result: BufferVar<f32>| {
-                        set_block_size([PAR_REDUCE_BLOCK_SIZE as u32 + 1, 1, 1]);
-                        let i = dispatch_id().x();
-                        let block_size = PAR_REDUCE_BLOCK_SIZE as u32;
-                        result.atomic_fetch_add(i % block_size, a.read(i) * b.read(i));
-                    },
-                )
-                .unwrap(),
-        );
-        self.abs_max_kernel = Some(
-            self.device
-                .create_kernel_async::<(Buffer<f32>, Buffer<f32>)>(
-                    &|a: BufferVar<f32>, result: BufferVar<f32>| {
-                        set_block_size([PAR_REDUCE_BLOCK_SIZE as u32 + 1, 1, 1]);
-                        let i = dispatch_id().x();
-                        let block_size = PAR_REDUCE_BLOCK_SIZE as u32;
-                        let cur = a.read(i).abs();
-                        let j = i % block_size;
-                        result.atomic_fetch_max(j, cur);
-                    },
-                )
-                .unwrap(),
-        );
-        // FIX!
-        self.add_scaled_kernel = Some(
-            self.device
-                .create_kernel_async::<(Buffer<f32>, Buffer<f32>, Buffer<f32>)>(
-                    &|k: BufferVar<f32>, a: BufferVar<f32>, out: BufferVar<f32>| {
-                        set_block_size([512, 1, 1]);
-                        let i = dispatch_id().x();
-                        out.write(i, out.read(i) + k.read(0) * a.read(i));
-                    },
-                )
-                .unwrap(),
-        );
+
         self.div_velocity_kernel = Some(
             self.device
                 .create_kernel_async::<()>(&|| {
                     self.divergence(&self.u, &self.v, &self.w, &self.div_velocity)
+                })
+                .unwrap(),
+        );
+        self.velocity_update_kernel = Some(
+            self.device
+                .create_kernel_async::<(f32,)>(&|dt: Expr<f32>| self.update_velocity_impl(dt))
+                .unwrap(),
+        );
+        self.compute_cfl_kernel = Some(
+            self.device
+                .create_kernel_async::<(Buffer<f32>,)>(&|tmp: BufferVar<f32>| {
+                    let i = dispatch_id().x();
+                    let particles = self.particles.as_ref().unwrap().var();
+                    let pt = particles.read(i);
+                    let v = pt.vel().length();
+                    tmp.atomic_fetch_max(i % tmp.len(), v);
                 })
                 .unwrap(),
         );
@@ -555,33 +531,7 @@ impl Simulation {
         // cpu_dbg!(d);
         div.set_index(x, d);
     }
-    pub fn incomplete_poisson(&self, P: &Grid<f32>, z: &Grid<f32>) {
-        // TODO: check this
-        /*
-        Incomplete Poisson:
-        If Ax=b can be written as stencil operation:
-            b_{i,j} = m_{i-1, j} * x_{i-1,j} + m_{i, j-1} * x_{i,j-1} + m_{i+1, j} * x_{i+1,j}+ m_{i, j+1} * x_{i,j+1} + m_{i,j} * x_{i,j}
-        Then to apply the preconditioner, simply compute:
-            z_{i,j} = todo!()
-        */
-        set_block_size([64, 64, 64]);
-        let x = dispatch_id();
-        let d = if self.dimension == 2 {
-            let p = P.at_index(x);
-            let x = x.int();
 
-            let p_x = P.at_index_or_zero(x + make_int3(1, 0, 0));
-            let p_y = P.at_index_or_zero(x + make_int3(0, 1, 0));
-            let p_xm = P.at_index_or_zero(x + make_int3(-1, 0, 0));
-            let p_ym = P.at_index_or_zero(x + make_int3(0, -1, 0));
-            let d = ((p_x + p_y + p_xm + p_ym) * (1.0 / 4.0f32) + (9.0 / 8.0f32) * p)
-                / (self.h() * self.h());
-            d
-        } else {
-            todo!()
-        };
-        z.set_index(x.uint(), d);
-    }
     pub fn build_A_impl(&self) {
         let x = dispatch_id();
         let i = self.p.linear_index(x);
@@ -629,103 +579,19 @@ impl Simulation {
             div2.set_index(x.uint(), div2.at_index(x.uint()) - d);
         }
     }
-    pub fn r_eq_r_sub_A_x(&self) {
-        self.pcg_Ax_kernel
-            .as_ref()
-            .unwrap()
-            .dispatch(self.p.res)
-            .unwrap();
-    }
-    pub fn z_eq_A_s(&self) {
-        self.pcg_As_kernel
-            .as_ref()
-            .unwrap()
-            .dispatch(self.p.res)
-            .unwrap();
-    }
-    pub fn dot(&self, a: &Grid<f32>, b: &Grid<f32>) -> f32 {
-        let tmp = self
-            .device
-            .create_buffer_from_fn::<f32>(PAR_REDUCE_BLOCK_SIZE, |_| 0.0)
-            .unwrap();
-        self.dot_kernel
-            .as_ref()
-            .unwrap()
-            .dispatch(
-                [a.res[0] * a.res[1] * a.res[2], 1, 1],
-                &a.values,
-                &b.values,
-                &tmp,
-            )
-            .unwrap();
-        tmp.copy_to_vec().iter().sum()
-        // let a = a.values.copy_to_vec();
-        // let b = b.values.copy_to_vec();
-        // a.par_iter().zip(b.par_iter()).map(|(a, b)| a * b).sum()
-    }
-    pub fn abs_max(&self, a: &Grid<f32>) -> f32 {
-        let tmp = self
-            .device
-            .create_buffer_from_fn::<f32>(PAR_REDUCE_BLOCK_SIZE, |_| 0.0)
-            .unwrap();
-        self.abs_max_kernel
-            .as_ref()
-            .unwrap()
-            .dispatch([a.res[0] * a.res[1] * a.res[2], 1, 1], &a.values, &tmp)
-            .unwrap();
-        *tmp.copy_to_vec()
-            .iter()
-            .max_by(|a, b| a.partial_cmp(b).unwrap())
-            .unwrap()
-        // a.values
-        //     .copy_to_vec()
-        //     .par_iter()
-        //     .map(|x| x.abs())
-        //     .max_by(|a, b| a.partial_cmp(b).unwrap())
-        //     .unwrap()
-    }
-    pub fn add_scaled(&self, k: f32, a: &Grid<f32>, out: &Grid<f32>) {
-        assert_eq!(a.res, out.res);
-        let k = self.device.create_buffer_from_slice(&[k]).unwrap();
-        self.add_scaled_kernel
-            .as_ref()
-            .unwrap()
-            .dispatch(
-                [a.res[0] * a.res[1] * a.res[2], 1, 1],
-                &k,
-                &a.values,
-                &out.values,
-            )
-            .unwrap();
-    }
-    // solve Px = b
-    pub fn apply_preconditioner(&self) {
-        match self.settings.preconditioner {
-            Preconditioner::Identity => {
-                self.pcg_r.values.copy_to_buffer(&self.pcg_z.values);
-            }
-            Preconditioner::IncompletePoisson => {
-                self.incomplete_poission_kernel
-                    .as_ref()
-                    .unwrap()
-                    .dispatch(self.pcg_r.res)
-                    .unwrap();
-            }
-            _ => todo!(),
-        }
-    }
-    pub fn advect_particle(&self, dt: &Buffer<f32>) {
+
+    pub fn advect_particle(&self, dt: f32) {
         self.advect_particle_kernel
             .as_ref()
             .unwrap()
-            .dispatch([self.particles_vec.len() as u32, 1, 1], dt)
+            .dispatch([self.particles_vec.len() as u32, 1, 1], &dt)
             .unwrap();
     }
-    pub fn apply_ext_forces(&self, dt: &Buffer<f32>) {
+    pub fn apply_ext_forces(&self, dt: f32) {
         self.apply_gravity_kernel
             .as_ref()
             .unwrap()
-            .dispatch(self.v.res, dt)
+            .dispatch(self.v.res, &dt)
             .unwrap();
     }
     pub fn compute_div_velocity(&self) {
@@ -735,90 +601,34 @@ impl Simulation {
             .dispatch(self.div_velocity.res)
             .unwrap();
     }
-    pub fn solve_pressure(&self) {
+    pub fn solve_pressure(&self, dt: f32) {
         self.compute_div_velocity();
-        let iters = self.pressure_pcg_solver();
-        if iters.is_none() {
-            panic!("pressure solver failed");
-        }
 
-        let my_solution = self.p.values.copy_to_vec();
-        self.p.values.fill(0.0);
+        let solver = self.solver.as_ref().unwrap();
+        let A = self.A.as_ref().unwrap();
+        solver
+            .zero
+            .dispatch([A.coeff.len() as u32, 1, 1], &A.coeff)
+            .unwrap();
         self.build_A_kernel
             .as_ref()
             .unwrap()
             .dispatch(self.p.res)
             .unwrap();
-        let solver = self.solver.as_ref().unwrap();
-        solver.solve(
+        let i = solver.solve(
             self.A.as_ref().unwrap(),
             &self.div_velocity.values,
             &self.p.values,
         );
-        solver.solve(
-            self.A.as_ref().unwrap(),
-            &self.div_velocity.values,
-            &self.p.values,
-        );
-        // pcgsolver::eigen_solve(
-        //     self.A.as_ref().unwrap(),
-        //     &self.div_velocity.values,
-        //     &self.p.values,
-        // );
-        let eigen_solution = self.p.values.copy_to_vec();
-        // dbg!(&my_solution);
-        // dbg!(&eigen_solution);
-        for (a, b) in my_solution.iter().zip(eigen_solution.iter()) {
-            let a = *a;
-            let b = *b;
-            if (a - b).abs() / (b.abs() + 0.01) > 1e-2 {
-                dbg!(a);
-                dbg!(b);
-                panic!("solver failed");
-            }
+        if i.is_none() {
+            panic!("pressure solver failed");
         }
+        self.velocity_update_kernel
+            .as_ref()
+            .unwrap()
+            .dispatch(self.u.res, &dt)
+            .unwrap();
     }
-    pub fn pressure_pcg_solver(&self) -> Option<u32> {
-        let settings = self.control.copy_to_vec()[0];
-        self.div_velocity.values.copy_to_buffer(&self.pcg_r.values);
-        // let div_v = self.div_velocity.values.copy_to_vec();
-        // dbg!(&div_v);
-        // dbg!(div_v.len());
-        self.r_eq_r_sub_A_x();
-        let residual = self.abs_max(&self.pcg_r);
-        dbg!(residual);
-        if residual < settings.tolerance {
-            return Some(0);
-        }
-        let tol = settings.tolerance * residual;
-        self.apply_preconditioner();
-        let mut rho = self.dot(&self.pcg_r, &self.pcg_z);
-        dbg!(rho);
-        if rho == 0.0 || rho.is_nan() {
-            return None;
-        }
-
-        self.pcg_z.values.copy_to_buffer(&self.pcg_s.values);
-        for i in 0..settings.max_iterations {
-            self.z_eq_A_s();
-            let alpha = rho / self.dot(&self.pcg_s, &self.pcg_z);
-            self.add_scaled(alpha, &self.pcg_s, &self.p);
-            self.add_scaled(-alpha, &self.pcg_z, &self.pcg_r);
-            let residual = self.abs_max(&self.pcg_r);
-            dbg!(i, residual);
-            if residual < tol {
-                return Some(i + 1);
-            }
-            self.apply_preconditioner();
-            let rho_new = self.dot(&self.pcg_r, &self.pcg_z);
-            let beta = rho_new / rho;
-            self.add_scaled(beta, &self.pcg_s, &self.pcg_z);
-            rho = rho_new;
-            self.pcg_z.values.copy_to_buffer(&self.pcg_s.values);
-        }
-        None
-    }
-
     fn transfer_particles_to_grid(&self) {
         self.build_particle_list_kernel
             .as_ref()
@@ -841,7 +651,7 @@ impl Simulation {
             .unwrap();
         });
     }
-    fn transfter_grid_to_particles(&self) {
+    fn transfer_grid_to_particles(&self) {
         self.grid_to_particle_kernel
             .as_ref()
             .unwrap()
@@ -850,16 +660,49 @@ impl Simulation {
     }
     pub fn step(&self) {
         let settings = self.control.copy_to_vec()[0];
-        let dt = self
-            .device
-            .create_buffer_from_slice(&[settings.dt])
-            .unwrap();
-        self.advect_particle(&dt);
+        let dt = settings.dt;
+        self.advect_particle(dt);
         self.transfer_particles_to_grid();
-        self.apply_ext_forces(&dt);
+        self.apply_ext_forces(dt);
 
-        self.solve_pressure();
-        self.transfter_grid_to_particles();
+        self.solve_pressure(dt);
+        self.transfer_grid_to_particles();
+    }
+    // solve for (1 - alpha) * cur_phi + alpha * neighbor_phi = 0
+    //  cur_phi - alpha * cur_phi + alpha * neighbor_phi = 0
+    //  -alpha * (cur_phi - neighbor_phi) = -cur_phi
+    //  alpha = -cur_phi / (cur_phi - neighbor_phi)
+    fn free_surface_alpha(&self, cur_phi: Expr<f32>, neighbor_phi: Expr<f32>) -> Expr<f32> {
+        cur_phi / (neighbor_phi - cur_phi)
+    }
+    fn update_velocity_impl(&self, dt: Expr<f32>) {
+        // u = u - dt * grad(p)
+        let i = dispatch_id();
+
+        let update = |u: &Grid<f32>, axis: u8| {
+            let i = i.int();
+            let off = match axis {
+                0 => make_int3(1, 0, 0),
+                1 => make_int3(0, 1, 0),
+                2 => make_int3(0, 0, 1),
+                _ => unreachable!(),
+            };
+            let i_a = i.at(axis as usize);
+            if_!(i_a.cmpgt(0) & i_a.cmplt(u.res[axis as usize] - 1), {
+                let grad_pressure =
+                    (self.p.at_index(i.uint()) - self.p.at_index((i - off).uint())) / self.h();
+                let u_cur = u.at_index(i.uint());
+                u.set_index(i.uint(), u_cur - dt * grad_pressure);
+            }, else{
+                // set component to zero
+                u.set_index(i.uint(), 0.0.into());
+            });
+        };
+        update(&self.u, 0);
+        update(&self.v, 1);
+        if self.dimension == 3 {
+            update(&self.w, 2);
+        }
     }
 
     pub fn dump_velocity_field_2d(&self, image_path: &str) {
