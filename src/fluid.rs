@@ -52,6 +52,8 @@ pub struct SimulationSettings {
 }
 pub struct Simulation {
     pub settings: SimulationSettings,
+    res_p1: [u32; 3],
+
     pub u: Grid<f32>,
     pub v: Grid<f32>,
     pub w: Grid<f32>,
@@ -104,22 +106,21 @@ impl Simulation {
         let dimension = settings.dimension;
         let h = settings.h;
         let dt = settings.dt;
-        let u = Grid::new(device.clone(), res, dimension, [-0.5 * h, 0.0, 0.0], h);
-        let v = Grid::new(device.clone(), res, dimension, [0.0, -0.5 * h, 0.0], h);
-        let w = Grid::new(device.clone(), res, dimension, [0.0, 0.0, -0.5 * h], h);
+        let u_res = [res[0] + 1, res[1], res[2]];
+        let v_res = [res[0], res[1] + 1, res[2]];
+        let w_res = [res[0], res[1], if dimension == 3 { res[2] + 1 } else { 1 }];
+        let u = Grid::new(device.clone(), u_res, dimension, [-0.5 * h, 0.0, 0.0], h);
+        let v = Grid::new(device.clone(), v_res, dimension, [0.0, -0.5 * h, 0.0], h);
+        let w = Grid::new(device.clone(), w_res, dimension, [0.0, 0.0, -0.5 * h], h);
 
-        let tmp_u = Grid::new(device.clone(), res, dimension, [-0.5 * h, 0.0, 0.0], h);
-        let tmp_v = Grid::new(device.clone(), res, dimension, [0.0, -0.5 * h, 0.0], h);
-        let tmp_w = Grid::new(device.clone(), res, dimension, [0.0, 0.0, -0.5 * h], h);
+        let tmp_u = Grid::new(device.clone(), u_res, dimension, [-0.5 * h, 0.0, 0.0], h);
+        let tmp_v = Grid::new(device.clone(), v_res, dimension, [0.0, -0.5 * h, 0.0], h);
+        let tmp_w = Grid::new(device.clone(), w_res, dimension, [0.0, 0.0, -0.5 * h], h);
 
         let make_pressure_grid = || {
             Grid::new(
                 device.clone(),
-                [
-                    res[0] - 1,
-                    res[1] - 1,
-                    if dimension == 3 { res[2] - 1 } else { 1 },
-                ], // boundary is zero
+                [res[0], res[1], if dimension == 3 { res[2] } else { 1 }], // boundary is zero
                 dimension,
                 [0.0, 0.0, 0.0],
                 h,
@@ -146,6 +147,11 @@ impl Simulation {
             })
             .unwrap();
         Self {
+            res_p1: [
+                res[0] + 1,
+                res[1] + 1,
+                if dimension == 3 { res[2] + 1 } else { 1 },
+            ],
             settings,
             u,
             v,
@@ -280,15 +286,17 @@ impl Simulation {
                         ParticleTransfer::Apic => (0.0, 0.0, 1.0),
                     };
                     let map = |g: &Grid<f32>, axis: u8| {
-                        self.transfer_particles_to_grid_impl(
-                            g,
-                            particles,
-                            cell_idx,
-                            axis,
-                            pic_weight,
-                            flip_weight,
-                            apic_weight,
-                        )
+                        if_!(!g.oob(cell_idx.int()), {
+                            self.transfer_particles_to_grid_impl(
+                                g,
+                                particles,
+                                cell_idx,
+                                axis,
+                                pic_weight,
+                                flip_weight,
+                                apic_weight,
+                            )
+                        });
                     };
                     map(&self.u, 0);
                     map(&self.v, 1);
@@ -626,7 +634,7 @@ impl Simulation {
         self.velocity_update_kernel
             .as_ref()
             .unwrap()
-            .dispatch(self.u.res, &dt)
+            .dispatch(self.res_p1, &dt)
             .unwrap();
     }
     fn transfer_particles_to_grid(&self) {
@@ -639,7 +647,7 @@ impl Simulation {
         self.particle_to_grid_kernel
             .as_ref()
             .unwrap()
-            .dispatch(self.u.res)
+            .dispatch(self.res_p1)
             .unwrap();
         let stream = self.device.default_stream();
         stream.with_scope(|s| {
@@ -681,21 +689,23 @@ impl Simulation {
 
         let update = |u: &Grid<f32>, axis: u8| {
             let i = i.int();
-            let off = match axis {
-                0 => make_int3(1, 0, 0),
-                1 => make_int3(0, 1, 0),
-                2 => make_int3(0, 0, 1),
-                _ => unreachable!(),
-            };
-            let i_a = i.at(axis as usize);
-            if_!(i_a.cmpgt(0) & i_a.cmplt(u.res[axis as usize] - 1), {
-                let grad_pressure =
-                    (self.p.at_index(i.uint()) - self.p.at_index((i - off).uint())) / self.h();
-                let u_cur = u.at_index(i.uint());
-                u.set_index(i.uint(), u_cur - dt * grad_pressure);
-            }, else{
-                // set component to zero
-                u.set_index(i.uint(), 0.0.into());
+            if_!(!u.oob(i), {
+                let off = match axis {
+                    0 => make_int3(1, 0, 0),
+                    1 => make_int3(0, 1, 0),
+                    2 => make_int3(0, 0, 1),
+                    _ => unreachable!(),
+                };
+                let i_a = i.at(axis as usize);
+                if_!(i_a.cmpgt(0) & i_a.cmplt(u.res[axis as usize] - 1), {
+                    let grad_pressure =
+                        (self.p.at_index(i.uint()) - self.p.at_index((i - off).uint())) / self.h();
+                    let u_cur = u.at_index(i.uint());
+                    u.set_index(i.uint(), u_cur - dt * grad_pressure);
+                }, else{
+                    // set component to zero
+                    u.set_index(i.uint(), 0.0.into());
+                });
             });
         };
         update(&self.u, 0);

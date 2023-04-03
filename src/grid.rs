@@ -121,12 +121,12 @@ impl<T: Value> Grid<T> {
         }
     }
     pub fn at_index(&self, p: Expr<Uint3>) -> Expr<T> {
-        if cfg!(debug_assertions) {
-            if_!(self.oob(p.int()), {
-                cpu_dbg!(p.int());
-                cpu_dbg!(make_uint3(self.res[0], self.res[1], self.res[2]));
-            });
-        }
+        // if cfg!(debug_assertions) {
+        //     if_!(self.oob(p.int()), {
+        //         cpu_dbg!(p.int());
+        //         cpu_dbg!(make_uint3(self.res[0], self.res[1], self.res[2]));
+        //     });
+        // }
         assert(!self.oob(p.int()));
         let index = self.linear_index(p);
         self.values.var().read(index)
