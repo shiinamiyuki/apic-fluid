@@ -109,6 +109,19 @@ pub enum VelocityIntegration {
 }
 
 impl Simulation {
+    fn stencil_offsets(&self, i: u32) -> Expr<Int3> {
+        let offset = make_int3(0, 1, -1);
+        match i {
+            0 => offset.xxx(),
+            1 => offset.yxx(),
+            2 => offset.zxx(),
+            3 => offset.xyx(),
+            4 => offset.xzx(),
+            5 => offset.xxy(),
+            6 => offset.xxz(),
+            _ => panic!("invalid stencil offset index"),
+        }
+    }
     pub fn new(device: Device, settings: SimulationSettings) -> Self {
         let res = settings.res;
         let dimension = settings.dimension;
@@ -601,30 +614,105 @@ impl Simulation {
         let A = self.A.as_ref().unwrap();
         let A_coeff = A.coeff.var();
         let h = self.h();
+        let rho = self.state.rho;
+        let rho2 = rho * rho;
         let h2 = h * h;
         let diag = var!(f32);
-        let rhs = var!(f32);
         let phi_x = self.liquid_phi.at_index(x);
-        let compute_stencil = |offset_idx: u32| {
-            let offset = A.offsets.var().read(offset_idx);
-            let y = x.int() + offset;
-            if_!(!self.liquid_phi.oob(y), {
-                let phi_y = self.liquid_phi.at_index(y.uint());
-                let alpha = self.free_surface_alpha(phi_x, phi_y);
-            });
+
+        // get fluid mass around current pressure sample
+        let get_fluid_mass = |offset_idx: u32| {
+            match offset_idx {
+                0 => panic!("don't call 0 directly"),
+                1 => {
+                    // x+1/2
+                    self.mass_u.at_index(x + make_uint3(1, 0, 0))
+                }
+                2 => {
+                    // x-1/2
+                    self.mass_u.at_index(x)
+                }
+                3 => {
+                    // y+1/2
+                    self.mass_v.at_index(x + make_uint3(0, 1, 0))
+                }
+                4 => {
+                    // y-1/2
+                    self.mass_v.at_index(x)
+                }
+                5 => {
+                    // z+1/2
+                    self.mass_w.at_index(x + make_uint3(0, 0, 1))
+                }
+                6 => {
+                    // z-1/2
+                    self.mass_w.at_index(x)
+                }
+                _ => unreachable!(),
+            }
         };
-        if self.dimension == 2 {
-            assert_eq!(A.offsets.len(), 5);
-            for j in 1..5 {
-                compute_stencil(j);
+        let lhs_scale = 1.0 / (h2 * rho2);
+        // only build the system for fluid cells
+        if_!(phi_x.cmplt(0.0), {
+            let du = var!(f32);
+            let dv = var!(f32);
+            let dw = var!(f32);
+            let compute_stencil = |offset_idx: u32| {
+                let offset = A.offsets.var().read(offset_idx);
+                let y = x.int() + offset;
+                if_!(!self.liquid_phi.oob(y), {
+                    let phi_y = self.liquid_phi.at_index(y.uint());
+                    let mass = get_fluid_mass(offset_idx);
+                    if_!(phi_y.cmplt(0.0), {
+                        let theta = self.free_surface_theta(phi_x, phi_y).max(1e-3);
+                        diag.store(diag.load() + mass * (1.0 - theta) / theta * lhs_scale);
+                        A_coeff.write(i * A.offsets.len() as u32 + offset_idx, 0.0);
+                    }, else {
+                        diag.store(diag.load() + mass * lhs_scale);
+                        A_coeff.write(i * A.offsets.len() as u32 + offset_idx, -mass * lhs_scale);
+                    });
+                    //
+                });
+            };
+            if self.dimension == 2 {
+                assert_eq!(A.offsets.len(), 5);
+                for j in 1..5 {
+                    compute_stencil(j);
+                }
+            } else {
+                assert_eq!(A.offsets.len(), 7);
+                for j in 1..7 {
+                    compute_stencil(j);
+                }
             }
-        } else {
-            assert_eq!(A.offsets.len(), 7);
-            for j in 1..7 {
-                compute_stencil(j);
+            A_coeff.write(i * A.offsets.len() as u32, diag.load());
+            {
+                let offset = make_uint2(0, 1);
+                let weighted_velocity = |u: &Grid<f32>, mass_u: &Grid<f32>, x: Expr<Uint3>| {
+                    u.at_index(x) * mass_u.at_index(x)
+                };
+                du.store(
+                    weighted_velocity(&self.u, &self.mass_u, x + offset.yxx())
+                        - weighted_velocity(&self.u, &self.mass_u, x),
+                );
+                dv.store(
+                    weighted_velocity(&self.v, &self.mass_v, x + offset.xyx())
+                        - weighted_velocity(&self.v, &self.mass_v, x),
+                );
+                if self.dimension == 3 {
+                    dw.store(
+                        weighted_velocity(&self.w, &self.mass_w, x + offset.xxy())
+                            - weighted_velocity(&self.w, &self.mass_w, x),
+                    );
+                }
             }
-        }
-        A_coeff.write(i * A.offsets.len() as u32, diag.load());
+            let div = if self.dimension == 2 {
+                (-du.load() - dv.load()) / (self.state.rho * self.h())
+            } else {
+                (-du.load() - dv.load() - dw.load()) / (self.state.rho * self.h())
+            };
+            self.div_velocity.set_index(x, div);
+        });
     }
     fn build_A_impl(&self) {
         let x = dispatch_id();
@@ -703,6 +791,10 @@ impl Simulation {
         solver
             .zero
             .dispatch([A.coeff.len() as u32, 1, 1], &A.coeff)
+            .unwrap();
+        solver
+            .zero
+            .dispatch(self.div_velocity.res, &self.div_velocity.values)
             .unwrap();
         // self.build_A_kernel
         //     .as_ref()
@@ -783,11 +875,11 @@ impl Simulation {
         self.solve_pressure(dt);
         self.transfer_grid_to_particles();
     }
-    // solve for (1 - alpha) * cur_phi + alpha * neighbor_phi = 0
-    //  cur_phi - alpha * cur_phi + alpha * neighbor_phi = 0
-    //  -alpha * (cur_phi - neighbor_phi) = -cur_phi
-    //  alpha = -cur_phi / (cur_phi - neighbor_phi)
-    fn free_surface_alpha(&self, cur_phi: Expr<f32>, neighbor_phi: Expr<f32>) -> Expr<f32> {
+    // solve for (1 - theta) * cur_phi + theta * neighbor_phi = 0
+    //  cur_phi - theta * cur_phi + theta * neighbor_phi = 0
+    //  -theta * (cur_phi - neighbor_phi) = -cur_phi
+    //  theta = -cur_phi / (cur_phi - neighbor_phi)
+    fn free_surface_theta(&self, cur_phi: Expr<f32>, neighbor_phi: Expr<f32>) -> Expr<f32> {
         cur_phi / (neighbor_phi - cur_phi)
     }
     fn update_velocity_impl(&self, dt: Expr<f32>) {

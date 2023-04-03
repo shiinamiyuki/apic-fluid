@@ -32,5 +32,9 @@ fn test_solve() {
     sim.solve_pressure(sim.settings.dt);
 }
 fn main() {
-    test_solve();
+    // test_solve();
+    unsafe {
+        let viewer = cpp_extra::launch_viewer(1024);
+        cpp_extra::destroy_viewer(viewer);
+    }
 }
