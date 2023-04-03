@@ -286,7 +286,7 @@ impl PcgSolver {
         None
     }
 }
-#[link(name = "solve")]
+#[link(name = "cpp_extra")]
 extern "C" {
     pub fn eigen_pcg_solve(
         nx: i32,

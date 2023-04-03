@@ -5,6 +5,7 @@ pub use luisa_compute as luisa;
 pub mod fluid;
 pub mod grid;
 pub mod pcgsolver;
+pub mod cpp_extra;
 
 pub fn trilinear_weight(off: Expr<Float3>, dim: usize) -> Expr<f32> {
     match dim {
