@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use crate::*;
 #[derive(KernelArg)]
 pub struct Stencil {
@@ -102,7 +104,8 @@ impl PcgSolver {
                         }
                         Preconditioner::DiagJacobi => {
                             let diag = A.coeff.read(i * noffsets);
-                            out.write(i, x.read(i) / (diag + 1e-5));
+                            let diag = select(diag.cmpeq(0.0), const_(1.0f32), diag);
+                            out.write(i, x.read(i) / diag);
                         }
                         Preconditioner::IncompletePoisson => {
                             let sum = var!(f32, 0.0);
@@ -118,9 +121,13 @@ impl PcgSolver {
                                         let p = p.uint();
                                         let ip = p.x() + p.y() * n[0] + p.z() * n[0] * n[1];
                                         if cfg!(debug_assertions) {
-                                            assert(A.coeff.read(ip * noffsets).cmpge(0.0));
+                                            if_!(A.coeff.read(ip * noffsets).cmplt(0.0), {
+                                                cpu_dbg!(A.coeff.read(ip * noffsets));
+                                            });
                                         }
-                                        let mp = 1.0 / (A.coeff.read(ip * noffsets) + 1e-5);
+                                        let diag = A.coeff.read(ip * noffsets);
+                                        let diag = select(diag.cmpeq(0.0), const_(1.0f32), diag);
+                                        let mp = 1.0 / diag;
                                         sum.store(sum.load() + x.read(ip) * mp);
                                         if_!((c.load() % 1).cmpeq(0), {
                                             m.store(m.load() + mp * mp);
@@ -227,7 +234,7 @@ impl PcgSolver {
             .copy_to_vec()
             .iter()
             .copied()
-            .max_by(|a, b| a.partial_cmp(b).unwrap())
+            .max_by(|a, b| a.partial_cmp(b).unwrap_or_else(|| panic!("{} {}", *a, *b)))
             .unwrap()
     }
     fn apply_A(&self, A: &Stencil, x: &Buffer<f32>, out: &Buffer<f32>, sub: bool) {
@@ -251,10 +258,46 @@ impl PcgSolver {
             .dispatch([x.len() as u32, 1, 1], &k, x, out)
             .unwrap();
     }
+    fn check_symmetric(&self, s: &Stencil) {
+        let A = s.coeff.copy_to_vec();
+        let mut map = HashMap::<(usize, usize), f32>::new();
+        let offsets = s.offsets.copy_to_vec();
+        let n = s.n;
+        for i in 0..(n[0] * n[1] * n[2]) as usize {
+            let x = i % n[0] as usize;
+            let y = (i / n[0] as usize) % n[1] as usize;
+            let z = i / (n[0] as usize * n[1] as usize);
+            for c in 0..offsets.len() {
+                let off = offsets[c];
+                let x = x as i64 + off.x as i64;
+                let y = y as i64 + off.y as i64;
+                let z = z as i64 + off.z as i64;
+                if x >= 0
+                    && x < n[0] as i64
+                    && y >= 0
+                    && y < n[1] as i64
+                    && z >= 0
+                    && z < n[2] as i64
+                {
+                    let j = (x + y * n[0] as i64 + z * n[0] as i64 * n[1] as i64) as usize;
+                    map.insert((i, j), A[i * offsets.len() + c]);
+                }
+            }
+        }
+        for (k, v) in &map {
+            let (i, j) = *k;
+            let v2 = map.get(&(j, i)).unwrap();
+            if (v - v2).abs() > 1e-6 {
+                println!("{} {} {} {}", i, j, v, v2);
+            }
+        }
+    }
     pub fn solve(&self, A: &Stencil, b: &Buffer<f32>, x: &Buffer<f32>) -> Option<usize> {
+        self.check_symmetric(A);
         assert_eq!(A.n, self.n);
         b.copy_to_buffer(&self.r);
         self.apply_A(A, x, &self.r, true);
+        // dbg!(b.copy_to_vec());
         let residual = self.abs_max(&self.r);
         if residual < self.tol {
             return Some(0);
@@ -272,7 +315,7 @@ impl PcgSolver {
             self.add_scaled(alpha, &self.s, &x);
             self.add_scaled(-alpha, &self.z, &self.r);
             let residual = self.abs_max(&self.r);
-            dbg!(i, residual);
+            // dbg!(i, residual);
             if residual < tol {
                 return Some(i + 1);
             }

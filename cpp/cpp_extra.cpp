@@ -23,29 +23,59 @@ struct Viewer
     igl::opengl::glfw::Viewer inner;
     int particle_count;
     Eigen::MatrixXd P;
+    std::vector<float> buf;
+    bool updated = false;
     Viewer(int particle_count) : particle_count(particle_count)
     {
         P.resize(particle_count, 3);
+        buf.resize(particle_count * 3);
     }
 };
 extern "C"
 {
-    void *launch_viewer(size_t particle_count)
+    void *create_viewer(size_t particle_count)
     {
         auto viewer = new Viewer(particle_count);
+        viewer->inner.callback_post_draw = [=](igl::opengl::glfw::Viewer &) -> bool
+        {
+            if (viewer->updated)
+            {
+                viewer->updated = false;
+                auto &P = viewer->P;
+                auto &points = viewer->buf;
+                for (size_t i = 0; i < viewer->particle_count; i++)
+                {
+
+                    P.row(i) = Eigen::RowVector3d(points[3 * i + 0], points[3 * i + 1], points[3 * i + 2]);
+                }
+                viewer->inner.data().point_size = 3;
+                viewer->inner.data().set_points(P, Eigen::RowVector3d(1, 1, 1));
+            }
+            return false;
+        };
+
         return viewer;
     }
+    void launch_viewer(void *viewer_)
+    {
+        auto viewer = (Viewer *)viewer_;
+        viewer->inner.core().is_animating = true;
+        viewer->inner.launch();
+    }
+
     void viewer_set_points(void *viewer_, const float *points)
     {
         auto viewer = (Viewer *)viewer_;
-        auto &P = viewer->P;
-        for (int i = 0; i < viewer->particle_count; i++)
-        {
-            P.row(i) = Eigen::RowVector3d(points[3 * i + 0], points[3 * i + 1], points[3 * i + 2]);
-        }
-        viewer->inner.data().set_points(P, Eigen::RowVector3d(1, 1, 1));
+        viewer->updated = true;
+        std::memcpy(viewer->buf.data(), points, sizeof(float) * viewer->particle_count * 3);
+        // auto &P = viewer->P;
+        // for (int i = 0; i < viewer->particle_count; i++)
+        // {
+        //     P.row(i) = Eigen::RowVector3d(points[3 * i + 0], points[3 * i + 1], points[3 * i + 2]);
+        // }
+        // viewer->inner.data().set_points(P, Eigen::RowVector3d(1, 1, 1));
     }
-    void destory_viewer(void *viewer_)
+    void destroy_viewer(void *viewer_)
     {
         auto viewer = (Viewer *)viewer_;
         delete viewer;
@@ -55,6 +85,8 @@ extern "C"
     {
         std::vector<Eigen::Triplet<float>> triplets;
         auto N = nx * ny * nz;
+        // printf("%d %d %d\n",nx,ny,nz);
+        // std::unordered_map<
         for (int z = 0; z < nz; ++z)
         {
             for (int y = 0; y < ny; ++y)
@@ -62,8 +94,8 @@ extern "C"
                 for (int x = 0; x < nx; ++x)
                 {
                     int i = x + y * nx + z * nx * ny;
-
-                    triplets.push_back(Eigen::Triplet<float>(i, i, stencil[0]));
+                    // printf("%f\n", stencil[0]);
+                    triplets.push_back(Eigen::Triplet<float>(i, i, stencil[i * noffsets]));
                     for (int j = 1; j < noffsets; ++j)
                     {
                         auto off_x = offsets[j * 3 + 0];
@@ -75,7 +107,7 @@ extern "C"
                             y + off_y >= 0 && y + off_y < ny &&
                             z + off_z >= 0 && z + off_z < nz)
                         {
-                            triplets.push_back(Eigen::Triplet<float>(i, idx, stencil[j]));
+                            triplets.push_back(Eigen::Triplet<float>(i, idx, stencil[i * noffsets + j]));
                         }
                     }
                 }
@@ -83,8 +115,15 @@ extern "C"
         }
         Eigen::SparseMatrix<float> A(N, N);
         A.setFromTriplets(triplets.begin(), triplets.end());
-
+        // Eigen::SimplicialLLT<Eigen::SparseMatrix<float>> lltOfA(A); // compute the Cholesky decomposition of A
+        // if(lltOfA.info() == Eigen::NumericalIssue)
+        // {
+        //     fprintf(stderr, "Possibly non semi-positive definitie matrix!\n");
+        //     // std::cerr << A << std::endl;
+        //     // abort();
+        // }
         Eigen::ConjugateGradient<Eigen::SparseMatrix<float>, Eigen::Lower | Eigen::Upper> cg;
+        cg.setMaxIterations(2000);
         cg.compute(A);
         Eigen::Map<const Eigen::VectorXf> bmap(b, N);
         Eigen::Map<Eigen::VectorXf> outmap(out, N);

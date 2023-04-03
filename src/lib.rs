@@ -10,7 +10,7 @@ pub mod cpp_extra;
 pub fn trilinear_weight(off: Expr<Float3>, dim: usize) -> Expr<f32> {
     match dim {
         2 => (1.0 - off.abs()).xy().reduce_prod(),
-        3 => (1.0 - off.abs()).xyz().reduce_prod(),
+        3 => (1.0 - off.abs()).reduce_prod(),
         _ => unreachable!(),
     }
 }
@@ -33,3 +33,4 @@ pub fn grad_trilinear_weight(off: Expr<Float3>, dim: usize) -> Expr<Float3> {
         _ => unreachable!(),
     }
 }
+
