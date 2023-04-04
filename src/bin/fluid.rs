@@ -70,16 +70,18 @@ fn dambreak(device: Device, res: u32, dt: f32) {
             res: [res, res, res * 2],
             h,
             g: 0.5,
-            rho: 1.0,
+            rho: 0.1,
             dimension: 3,
-            transfer: ParticleTransfer::Apic,
+            transfer: ParticleTransfer::PicFlip(0.95),
             advect: VelocityIntegration::Euler,
             preconditioner: Preconditioner::DiagJacobi,
+            force_wall_separation: false,
+            seperation_threshold: 0.0,
         },
     );
     let mut rng = StdRng::seed_from_u64(0);
-    for z in 0..50 {
-        for y in 0..70 {
+    for z in 0..60 {
+        for y in 0..60 {
             for x in 0..100 {
                 let x = x as f32 * 0.02;
                 let y = y as f32 * 0.02;
@@ -119,6 +121,8 @@ fn wave(device: Device, res: u32, dt: f32) {
             transfer: ParticleTransfer::Apic,
             advect: VelocityIntegration::Euler,
             preconditioner: Preconditioner::DiagJacobi,
+            force_wall_separation: false,
+            seperation_threshold: 0.1,
         },
     );
     for z in 0..200 {
@@ -159,13 +163,15 @@ fn boundary(device: Device, res: u32, dt: f32) {
             transfer: ParticleTransfer::Apic,
             advect: VelocityIntegration::Euler,
             preconditioner: Preconditioner::DiagJacobi,
+            force_wall_separation: true,
+            seperation_threshold: 0.1,
         },
     );
     for z in 0..200 {
         for y in 0..1 {
             for x in 0..200 {
                 let x = x as f32 * 0.005;
-                let y = y as f32 * 0.005+1.0;
+                let y = y as f32 * 0.005 + 1.0;
                 let z = z as f32 * 0.005;
                 sim.particles_vec.push(Particle {
                     pos: Float3::new(x, y, z),
@@ -198,6 +204,8 @@ fn crown(device: Device, res: u32, dt: f32) {
             transfer: ParticleTransfer::Apic,
             advect: VelocityIntegration::Euler,
             preconditioner: Preconditioner::DiagJacobi,
+            force_wall_separation: false,
+            seperation_threshold: 0.0,
         },
     );
     for z in 0..10 {
@@ -281,7 +289,7 @@ fn main() {
     init_logger();
     let ctx = Context::new(current_exe().unwrap());
     let device = ctx.create_cpu_device().unwrap();
-    dambreak(device, 32, 1.0 / 30.0);
+    dambreak(device, 40, 1.0 / 30.0);
     // wave(device, 64, 1.0 / 30.0);
     // crown(device, 40, 1.0 / 30.0);
     // boundary(device, 64, 1.0/30.0);

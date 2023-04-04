@@ -49,6 +49,8 @@ pub struct SimulationSettings {
     pub g: f32,
     pub dimension: usize,
     pub transfer: ParticleTransfer,
+    pub force_wall_separation: bool,
+    pub seperation_threshold: f32,
     pub advect: VelocityIntegration,
     pub preconditioner: Preconditioner,
 }
@@ -325,24 +327,10 @@ impl Simulation {
                     let cell_idx = dispatch_id().xyz();
                     let particles = self.particles.as_ref().unwrap();
                     let transfer = self.settings.transfer;
-                    let (pic_weight, flip_weight, apic_weight) = match transfer {
-                        ParticleTransfer::Pic => (1.0, 0.0, 0.0),
-                        ParticleTransfer::Flip => (0.0, 1.0, 0.0),
-                        ParticleTransfer::PicFlip(flip_weight) => {
-                            (1.0 - flip_weight, flip_weight, 0.0)
-                        }
-                        ParticleTransfer::Apic => (0.0, 0.0, 1.0),
-                    };
                     let map = |g: &Grid<f32>, axis: usize| {
                         if_!(!g.oob(cell_idx.int()), {
                             self.transfer_particles_to_grid_impl(
-                                g,
-                                particles,
-                                cell_idx,
-                                axis,
-                                pic_weight,
-                                flip_weight,
-                                apic_weight,
+                                g, particles, cell_idx, axis, transfer,
                             )
                         });
                     };
@@ -361,26 +349,10 @@ impl Simulation {
                     let particles = self.particles.as_ref().unwrap();
                     let pt_idx = dispatch_id().x();
                     let transfer = self.settings.transfer;
-                    let (pic_weight, flip_weight, apic_weight) = match transfer {
-                        ParticleTransfer::Pic => (1.0, 0.0, 0.0),
-                        ParticleTransfer::Flip => (0.0, 1.0, 0.0),
-                        ParticleTransfer::PicFlip(flip_weight) => {
-                            (1.0 - flip_weight, flip_weight, 0.0)
-                        }
-                        ParticleTransfer::Apic => (0.0, 0.0, 1.0),
-                    };
                     let map =
                         |g: &Grid<f32>, old_g: &Grid<f32>, has_value: &Grid<bool>, axis: u8| {
                             self.transfer_grid_to_particles_impl(
-                                g,
-                                old_g,
-                                has_value,
-                                particles,
-                                pt_idx,
-                                axis,
-                                pic_weight,
-                                flip_weight,
-                                apic_weight,
+                                g, old_g, has_value, particles, pt_idx, axis, transfer,
                             )
                         };
                     map(&self.u, &self.tmp_u, &self.has_value_u, 0);
@@ -524,15 +496,8 @@ impl Simulation {
         particles: &Buffer<Particle>,
         cell_idx: Expr<Uint3>,
         axis: usize,
-        pic_weight: f32,
-        flip_weight: f32,
-        apic_weight: f32,
+        transfer: ParticleTransfer,
     ) {
-        let weight_sum = pic_weight + flip_weight + apic_weight;
-        let pic_weight = pic_weight / weight_sum;
-        let flip_weight = flip_weight / weight_sum;
-        let apic_weight = apic_weight / weight_sum;
-
         let cell_pos = g.pos_i_to_f(cell_idx.int());
         let pic_flip_mv = var!(f32); // momentum
         let apic_mv = var!(f32); // momentum
@@ -578,8 +543,12 @@ impl Simulation {
         let m = select(m.load().cmpeq(0.0), const_(1.0f32), m.load());
         let pic_flip_v = pic_flip_mv.load() / m;
         let apic_v = apic_mv.load() / m;
-        // TODO: check this
-        let final_v = (pic_weight + flip_weight) * pic_flip_v + apic_weight * apic_v;
+        let final_v = match transfer {
+            ParticleTransfer::Pic | ParticleTransfer::Flip | ParticleTransfer::PicFlip(_) => {
+                pic_flip_v
+            }
+            ParticleTransfer::Apic => apic_v,
+        };
         g.set_index(cell_idx, final_v);
     }
     fn transfer_grid_to_particles_impl(
@@ -590,16 +559,10 @@ impl Simulation {
         particles: &Buffer<Particle>,
         pt_idx: Expr<u32>,
         axis: u8,
-        pic_weight: f32,
-        flip_weight: f32,
-        apic_weight: f32,
+        transfer: ParticleTransfer,
     ) {
         let particles = particles.var();
         let pt = particles.read(pt_idx);
-        let weight_sum = pic_weight + flip_weight + apic_weight;
-        let pic_weight = pic_weight / weight_sum;
-        let flip_weight = flip_weight / weight_sum;
-        let apic_weight = apic_weight / weight_sum;
 
         let v_p = pt.vel();
 
@@ -630,9 +593,14 @@ impl Simulation {
                 apic_c_pa.store(apic_c_pa.load() + grad_w_pa * v_i);
             });
         });
-        // TODO: check this
-        let v_pa =
-            (apic_weight + pic_weight) * pic_v_pa.load() + flip_weight * (v_pa + flip_v_pa.load());
+        let v_pa = match transfer {
+            ParticleTransfer::Pic => pic_v_pa.load(),
+            ParticleTransfer::Flip => flip_v_pa.load() + v_pa,
+            ParticleTransfer::PicFlip(flip_ratio) => {
+                pic_v_pa.load() * (1.0 - flip_ratio) + (flip_v_pa.load() + v_pa) * flip_ratio
+            }
+            ParticleTransfer::Apic => pic_v_pa.load(),
+        };
         let pt = var!(Particle, pt);
 
         match axis {
@@ -654,14 +622,17 @@ impl Simulation {
 
         particles.write(pt_idx, pt.load());
     }
-    fn compute_fluid_mass_impl(&self) {
-        let x = dispatch_id();
-        let unit_mass = self.state.rho
+    fn unit_mass(&self) -> Expr<f32> {
+        self.state.rho
             * if self.dimension == 2 {
                 self.h() * self.h() * self.state.rho
             } else {
                 self.h() * self.h() * self.h() * self.state.rho
-            };
+            }
+    }
+    fn compute_fluid_mass_impl(&self) {
+        let x = dispatch_id();
+        let unit_mass = self.unit_mass();
         let map = |u: &Grid<f32>, mass_u: &Grid<f32>, has_value_u: &Grid<bool>, axis: usize| {
             if_!(!u.oob(x.int()), {
                 let off = match axis {
@@ -767,6 +738,57 @@ impl Simulation {
                         A_coeff.write(i * A.offsets.len() as u32 + offset_idx, -mass * lhs_scale);
                     });
                     //
+                }, else {
+                    // if velocity is leaving the boundary
+                    // then treat the boundary as free surface
+
+                    if self.settings.force_wall_separation {
+                        let is_free_surface = var!(bool, false);
+                        let thr = self.settings.seperation_threshold * dt;
+                        match offset_idx {
+                            1=>{
+                                is_free_surface.store(x.x().cmpeq(self.p.res[0]-1) & self.u.at_index(x+make_uint3(1,0,0)).cmplt(-thr));
+                                if_!(is_free_surface.load(), {
+                                    du.store(du.load() + self.unit_mass() * self.u.at_index(x+make_uint3(1,0,0)));
+                                });
+                            }
+                            2=>{
+                                is_free_surface.store(x.x().cmpeq(0) & self.u.at_index(x).cmpgt(thr));
+                                if_!(is_free_surface.load(), {
+                                    du.store(du.load() - self.unit_mass() * self.u.at_index(x));
+                                });
+                            }
+                            3=>{
+                                is_free_surface.store(x.y().cmpeq(self.p.res[1]-1) & self.v.at_index(x+make_uint3(0,1,0)).cmplt(-thr));
+                                if_!(is_free_surface.load(), {
+                                    dv.store(dv.load() + self.unit_mass() * self.v.at_index(x+make_uint3(0,1,0)));
+                                });
+                            }
+                            4=>{
+                                is_free_surface.store(x.y().cmpeq(0) & self.v.at_index(x).cmpgt(thr));
+                                if_!(is_free_surface.load(), {
+                                    dv.store(dv.load() - self.unit_mass() * self.v.at_index(x));
+                                });
+                            }
+                            5=>{
+                                is_free_surface.store(x.z().cmpeq(self.p.res[2]-1) & self.w.at_index(x+make_uint3(0,0,1)).cmplt(-thr));
+                                if_!(is_free_surface.load(), {
+                                    dw.store(dw.load() + self.unit_mass() * self.w.at_index(x+make_uint3(0,0,1)));
+                                });
+                            }
+                            6=>{
+                                is_free_surface.store(x.z().cmpeq(0) & self.w.at_index(x).cmpgt(thr));
+                                if_!(is_free_surface.load(), {
+                                    dw.store(dw.load() - self.unit_mass() * self.w.at_index(x));
+                                });
+                            }
+                            _=>{}
+                        }
+                        if_!(is_free_surface.load(), {
+                            diag.store(diag.load() + self.unit_mass() / 0.5 * lhs_scale);
+                            // A_coeff.write(i * A.offsets.len() as u32 + offset_idx, 0.0);
+                        });
+                    }
                 });
             };
             if self.dimension == 2 {
@@ -787,16 +809,16 @@ impl Simulation {
                     u.at_index(x) * mass_u.at_index(x)
                 };
                 du.store(
-                    weighted_velocity(&self.u, &self.mass_u, x + offset.yxx())
+                    du.load() + weighted_velocity(&self.u, &self.mass_u, x + offset.yxx())
                         - weighted_velocity(&self.u, &self.mass_u, x),
                 );
                 dv.store(
-                    weighted_velocity(&self.v, &self.mass_v, x + offset.xyx())
+                    dv.load() + weighted_velocity(&self.v, &self.mass_v, x + offset.xyx())
                         - weighted_velocity(&self.v, &self.mass_v, x),
                 );
                 if self.dimension == 3 {
                     dw.store(
-                        weighted_velocity(&self.w, &self.mass_w, x + offset.xxy())
+                        dw.load() + weighted_velocity(&self.w, &self.mass_w, x + offset.xxy())
                             - weighted_velocity(&self.w, &self.mass_w, x),
                     );
                 }
@@ -968,7 +990,7 @@ impl Simulation {
             });
             profile("apply_ext_forces", || {
                 self.apply_ext_forces(dt);
-                self.enforce_boundary();
+                // self.enforce_boundary();
             });
             profile("solve_pressure", || {
                 self.solve_pressure(dt);
