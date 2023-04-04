@@ -1,5 +1,7 @@
 use std::collections::HashMap;
 
+use luisa::Scope;
+
 use crate::*;
 #[derive(KernelArg)]
 pub struct Stencil {
@@ -59,7 +61,7 @@ impl PcgSolver {
             .create_kernel_async::<(Stencil, Buffer<f32>, Buffer<f32>, i32)>(
                 &|A: StencilVar, x: BufferVar<f32>, out: BufferVar<f32>, sub: Expr<i32>| {
                     let i = dispatch_id().x();
-                    set_block_size([512, 1, 1]);
+                    set_block_size([256, 1, 1]);
                     let ix = i % n[0];
                     let iy = (i / n[0]) % n[1];
                     let iz = i / (n[0] * n[1]);
@@ -97,7 +99,7 @@ impl PcgSolver {
                     let iy = (i / n[0]) % n[1];
                     let iz = i / (n[0] * n[1]);
                     let noffsets = A.offsets.len();
-                    set_block_size([512, 1, 1]);
+                    set_block_size([64, 1, 1]);
                     match precond {
                         Preconditioner::Identity => {
                             out.write(i, x.read(i));
@@ -126,10 +128,10 @@ impl PcgSolver {
                                             });
                                         }
                                         let diag = A.coeff.read(ip * noffsets);
-                                        let diag = select(diag.cmpeq(0.0), const_(1.0f32), diag);
-                                        let mp = 1.0 / diag;
+                                        let mp =
+                                            select(diag.cmpeq(0.0), const_(0.0f32), 1.0 / diag);
                                         sum.store(sum.load() + x.read(ip) * mp);
-                                        if_!((c.load() % 1).cmpeq(0), {
+                                        if_!((c.load() % 2).cmpeq(0), {
                                             m.store(m.load() + mp * mp);
                                         });
                                     }
@@ -151,7 +153,7 @@ impl PcgSolver {
                 .create_kernel_async::<(Buffer<f32>, Buffer<f32>, Buffer<f32>)>(
                     &|x: BufferVar<f32>, y: BufferVar<f32>, out: BufferVar<f32>| {
                         let i = dispatch_id().x();
-                        set_block_size([Self::PAR_REDUCE_BLOCK_SIZE as u32 + 1, 1, 1]);
+                        set_block_size([256, 1, 1]);
                         out.atomic_fetch_add(
                             i % Self::PAR_REDUCE_BLOCK_SIZE as u32,
                             x.read(i) * y.read(i),
@@ -163,7 +165,7 @@ impl PcgSolver {
             .create_kernel_async::<(Buffer<f32>, Buffer<f32>)>(
                 &|x: BufferVar<f32>, out: BufferVar<f32>| {
                     let i = dispatch_id().x();
-                    set_block_size([Self::PAR_REDUCE_BLOCK_SIZE as u32 + 1, 1, 1]);
+                    set_block_size([256, 1, 1]);
                     out.atomic_fetch_max(i % Self::PAR_REDUCE_BLOCK_SIZE as u32, x.read(i).abs());
                 },
             )
@@ -171,14 +173,14 @@ impl PcgSolver {
         let zero = device
             .create_kernel_async::<(Buffer<f32>,)>(&|x: BufferVar<f32>| {
                 let i = dispatch_id().x();
-                set_block_size([512, 1, 1]);
+                set_block_size([256, 1, 1]);
                 x.write(i, 0.0);
             })
             .unwrap();
         let add_scaled = device
             .create_kernel_async::<(f32, Buffer<f32>, Buffer<f32>)>(
                 &|a: Expr<f32>, x: BufferVar<f32>, out: BufferVar<f32>| {
-                    set_block_size([512, 1, 1]);
+                    set_block_size([256, 1, 1]);
                     let i = dispatch_id().x();
                     out.write(i, out.read(i) + a * x.read(i));
                 },
@@ -253,9 +255,10 @@ impl PcgSolver {
             .dispatch([x.len() as u32, 1, 1], A, x, out)
             .unwrap();
     }
-    fn add_scaled(&self, k: f32, x: &Buffer<f32>, out: &Buffer<f32>) {
-        self.add_scaled
-            .dispatch([x.len() as u32, 1, 1], &k, x, out)
+    fn add_scaled<'a>(&self, k: f32, x: &Buffer<f32>, out: &Buffer<f32>, s: &Scope<'a>) {
+        s.submit([self
+            .add_scaled
+            .dispatch_async([x.len() as u32, 1, 1], &k, x, out)])
             .unwrap();
     }
     fn check_symmetric(&self, s: &Stencil) {
@@ -293,7 +296,7 @@ impl PcgSolver {
         }
     }
     pub fn solve(&self, A: &Stencil, b: &Buffer<f32>, x: &Buffer<f32>) -> Option<usize> {
-        self.check_symmetric(A);
+        // self.check_symmetric(A);
         assert_eq!(A.n, self.n);
         b.copy_to_buffer(&self.r);
         self.apply_A(A, x, &self.r, true);
@@ -309,11 +312,15 @@ impl PcgSolver {
             return None;
         }
         self.z.copy_to_buffer(&self.s);
+        let s = self.device.default_stream();
         for i in 0..self.max_iter {
             self.apply_A(A, &self.s, &self.z, false);
             let alpha = rho / self.dot(&self.s, &self.z);
-            self.add_scaled(alpha, &self.s, &x);
-            self.add_scaled(-alpha, &self.z, &self.r);
+            s.with_scope(|s| {
+                self.add_scaled(alpha, &self.s, &x, s);
+                self.add_scaled(-alpha, &self.z, &self.r, s);
+            });
+
             let residual = self.abs_max(&self.r);
             // dbg!(i, residual);
             if residual < tol {
@@ -322,9 +329,13 @@ impl PcgSolver {
             self.apply_preconditioner(A, &self.r, &self.z);
             let rho_new = self.dot(&self.r, &self.z);
             let beta = rho_new / rho;
-            self.add_scaled(beta, &self.s, &self.z);
             rho = rho_new;
-            self.z.copy_to_buffer(&self.s);
+            s.with_scope(|s| {
+                self.add_scaled(beta, &self.s, &self.z, s);
+
+                // self.z.copy_to_buffer(&self.s);
+                s.submit([self.z.copy_to_buffer_async(&self.s)]).unwrap();
+            });
         }
         None
     }

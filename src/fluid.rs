@@ -306,17 +306,6 @@ impl Simulation {
                         }
                         ParticleTransfer::Apic => (0.0, 0.0, 1.0),
                     };
-                    // for axis in 0..self.dimension {
-                    //     self.transfer_particles_to_grid_impl(
-                    //         &self.p,
-                    //         particles,
-                    //         cell_idx,
-                    //         axis,
-                    //         pic_weight,
-                    //         flip_weight,
-                    //         apic_weight,
-                    //     );
-                    // }
                     let map = |g: &Grid<f32>, axis: usize| {
                         if_!(!g.oob(cell_idx.int()), {
                             self.transfer_particles_to_grid_impl(
@@ -402,9 +391,36 @@ impl Simulation {
                     let pt = particles.var().read(i);
                     let new_pos = pt.pos() + pt.vel() * dt;
                     let lo = Float3Expr::zero();
-                    let hi = make_uint3(self.res[0], self.res[1], self.res[2]).float() * self.h();
-                    let new_pos = new_pos.clamp(lo - 0.5 * self.h(), hi - self.h() * 0.5001);
-                    let pt = pt.set_pos(new_pos);
+                    let hi =
+                        (make_uint3(self.res[0], self.res[1], self.res[2]) - 1).float() * self.h();
+                    // let new_pos = new_pos.clamp(lo - 0.5 * self.h(), hi + self.h() * 0.498);
+                    // let new_pos = new_pos.clamp(lo, hi);
+                    let vel = var!(Float3, pt.vel());
+                    for axis in 0..3 {
+                        let p_a = var!(f32, new_pos.at(axis));
+                        let v_a = var!(f32, vel.load().at(axis));
+                        if_!(p_a.load().cmplt(lo.at(axis)), {
+                            v_a.store(v_a.load().max(0.0));
+                        });
+                         if_!(p_a.load().cmpgt(hi.at(axis)), {
+                            v_a.store(v_a.load().min(0.0));
+                        });
+                        let v_a = v_a.load();
+                        match axis {
+                            0=>{
+                                vel.store(vel.load().set_x(v_a));
+                            }
+                            1=>{
+                                vel.store(vel.load().set_y(v_a));
+                            }
+                            2=>{
+                                vel.store(vel.load().set_z(v_a));
+                            }
+                            _=>unreachable!()
+                        }
+                    }
+                    let new_pos = new_pos.clamp(lo, hi);
+                    let pt = pt.set_pos(new_pos).set_vel(vel.load());
                     particles.var().write(i, pt);
                 })
                 .unwrap(),
@@ -489,36 +505,37 @@ impl Simulation {
             2 => ([-1, -1, -1], [1, 1, 0]),
             _ => unreachable!(),
         };
-        self.p.for_each_particle_in_neighbor(cell_idx, lo, hi, |pt_idx| {
-            let pt = particles.var().read(pt_idx);
-            let v_p = pt.vel();
-            let offset = (pt.pos() - cell_pos) / g.dx;
-            // if_!(!offset.abs().cmple(1.001).all(), {
-            //     cpu_dbg!(offset);
-            // });
-            // assert(offset.abs().cmple(1.001).all());
-            let w_p = trilinear_weight(offset, self.dimension);
-            // cpu_dbg!(w_p);
-            assert(w_p.cmpge(0.0) & w_p.cmple(1.0));
-            let m_p = 1.0;
-            let v_pa = match axis {
-                0 => v_p.x(),
-                1 => v_p.y(),
-                2 => v_p.z(),
-                _ => unreachable!(),
-            };
-            let c_pa = match axis {
-                0 => pt.c_x(),
-                1 => pt.c_y(),
-                2 => pt.c_z(),
-                _ => unreachable!(),
-            };
+        self.p
+            .for_each_particle_in_neighbor(cell_idx, lo, hi, |pt_idx| {
+                let pt = particles.var().read(pt_idx);
+                let v_p = pt.vel();
+                let offset = (pt.pos() - cell_pos) / g.dx;
+                // if_!(!offset.abs().cmple(1.001).all(), {
+                //     cpu_dbg!(offset);
+                // });
+                // assert(offset.abs().cmple(1.001).all());
+                let w_p = trilinear_weight(offset, self.dimension);
+                // cpu_dbg!(w_p);
+                assert(w_p.cmpge(0.0) & w_p.cmple(1.0));
+                let m_p = 1.0;
+                let v_pa = match axis {
+                    0 => v_p.x(),
+                    1 => v_p.y(),
+                    2 => v_p.z(),
+                    _ => unreachable!(),
+                };
+                let c_pa = match axis {
+                    0 => pt.c_x(),
+                    1 => pt.c_y(),
+                    2 => pt.c_z(),
+                    _ => unreachable!(),
+                };
 
-            pic_flip_mv.store(pic_flip_mv.load() + m_p * v_pa * w_p);
+                pic_flip_mv.store(pic_flip_mv.load() + m_p * v_pa * w_p);
 
-            apic_mv.store(apic_mv.load() + m_p * w_p * (v_pa + c_pa.dot(cell_pos - pt.pos())));
-            m.store(m.load() + w_p * m_p);
-        });
+                apic_mv.store(apic_mv.load() + m_p * w_p * (v_pa + c_pa.dot(cell_pos - pt.pos())));
+                m.store(m.load() + w_p * m_p);
+            });
         let m = select(m.load().cmpeq(0.0), const_(1.0f32), m.load());
         let pic_flip_v = pic_flip_mv.load() / m;
         let apic_v = apic_mv.load() / m;
@@ -607,7 +624,7 @@ impl Simulation {
             if_!(!u.oob(x.int()), {
                 let x_a = x.at(axis);
                 let mass = if_!(x_a.cmpeq(0) | x_a.cmpeq(u.res[axis] - 1), {
-                    const_(0.5f32)
+                    const_(0.0f32)
                 }, else {
                     // if_!(x.cmpeq(0).any() | x.cmpeq(make_uint3(u.res[0], u.res[1], u.res[2]) - 1).any(), {
                     //     const_(0.5f32)
@@ -681,7 +698,8 @@ impl Simulation {
                     let phi_y = self.liquid_phi.at_index(y.uint());
                     let mass = get_fluid_mass(offset_idx);
                     if_!(phi_y.cmpgt(0.0), {
-                        let theta = self.free_surface_theta(phi_x, phi_y).max(1e-3);
+                        let theta = self.free_surface_theta(phi_x, phi_y).max(1e-2); // 1e-3 would make fluid explode
+                        assert(theta.is_finite());
                         assert(theta.cmpge(0.0) & theta.cmple(1.0));
                         // 1 + (1 - theta) / theta = 1 / theta
                         diag.store(diag.load() + mass / theta * lhs_scale);
@@ -761,7 +779,6 @@ impl Simulation {
         });
     }
     pub fn solve_pressure(&self, dt: f32) {
-        self.copy_velocity();
         let solver = self.solver.as_ref().unwrap();
         let A = self.A.as_ref().unwrap();
         solver
@@ -785,14 +802,14 @@ impl Simulation {
         // dbg!(&self.v.values.copy_to_vec());
         // dbg!(&A.coeff.copy_to_vec());
         // dbg!(&self.rhs.values.copy_to_vec());
-        // let i = solver.solve(self.A.as_ref().unwrap(), &self.rhs.values, &self.p.values);
-        // if i.is_none() {
-        //     log::warn!("pressure solver failed");
-        // } else {
-        //     log::info!("pressure solve finished in {} iterations", i.unwrap());
-        // }
+        let i = solver.solve(self.A.as_ref().unwrap(), &self.rhs.values, &self.p.values);
+        if i.is_none() {
+            log::warn!("pressure solver failed");
+        } else {
+            log::info!("pressure solve finished in {} iterations", i.unwrap());
+        }
 
-        pcgsolver::eigen_solve(self.A.as_ref().unwrap(), &self.rhs.values, &self.p.values);
+        // pcgsolver::eigen_solve(self.A.as_ref().unwrap(), &self.rhs.values, &self.p.values);
 
         self.velocity_update_kernel
             .as_ref()
@@ -812,7 +829,7 @@ impl Simulation {
         self.particle_to_grid_kernel
             .as_ref()
             .unwrap()
-            .dispatch(self.p.res)
+            .dispatch(self.res_p1)
             .unwrap();
     }
     fn transfer_grid_to_particles(&self) {
@@ -856,6 +873,7 @@ impl Simulation {
             });
             profile("transfer_particles_to_grid", || {
                 self.transfer_particles_to_grid();
+                self.copy_velocity();
             });
             profile("compute_liquid_phi", || {
                 self.compute_liquid_phi();
@@ -880,22 +898,26 @@ impl Simulation {
     // solve for (1 - theta) * cur_phi + theta * neighbor_phi = 0
     //  cur_phi - theta * cur_phi + theta * neighbor_phi = 0
     //  -theta * (cur_phi - neighbor_phi) = -cur_phi
-    //  theta = -cur_phi / (cur_phi - neighbor_phi)
+    //  theta = cur_phi / (cur_phi - neighbor_phi)
     fn free_surface_theta(&self, cur_phi: Expr<f32>, neighbor_phi: Expr<f32>) -> Expr<f32> {
         assert(cur_phi.cmplt(0.0));
-        cur_phi / (neighbor_phi - cur_phi)
+        cur_phi / (cur_phi - neighbor_phi)
     }
     fn enforce_boundary_impl(&self, g: &Grid<f32>, axis: usize) {
         let x = dispatch_id();
         let x_a = x.at(axis);
         if_!(!g.oob(x.int()), {
-            if_!(x_a.cmpeq(0) | x_a.cmpeq(g.res[axis] - 1), {
-                g.set_index(x, 0.0.into())
-            })
+            let v = g.at_index(x);
+            if_!(x_a.cmpeq(0), {
+                g.set_index(x, v.max(0.0));
+            });
+            if_!(x_a.cmpeq(g.res[axis] - 1), {
+                g.set_index(x, v.min(0.0));
+            });
         });
     }
 
-    // Make sure the velocity is zero on grid boundaries
+    // Make sure the fluid does not penetrate the boundary
     fn enforce_boundary(&self) {
         self.enforce_boundary_kernel
             .as_ref()
@@ -904,6 +926,39 @@ impl Simulation {
             .unwrap();
     }
     fn update_velocity_impl(&self, dt: Expr<f32>) {
+        // u = u - dt * grad(p)
+        let i = dispatch_id();
+
+        let update = |u: &Grid<f32>, mass_u: &Grid<f32>, axis: u8| {
+            let i = i.int();
+            if_!(!u.oob(i), {
+                let off = match axis {
+                    0 => make_int3(1, 0, 0),
+                    1 => make_int3(0, 1, 0),
+                    2 => make_int3(0, 0, 1),
+                    _ => unreachable!(),
+                };
+                let mass = mass_u.at_index(i.uint());
+                if_!(mass.cmpgt(0.0), {
+                    let u_cur = u.at_index(i.uint());
+                    let grad_pressure =
+                        (self.p.at_index_or_zero(i) - self.p.at_index_or_zero(i - off)) / self.h();
+                    // let grad_pressure =
+                    //     (self.p.at_index((i + off).uint()) - self.p.at_index(i.uint())) / self.h();
+
+                    u.set_index(i.uint(), u_cur - dt * grad_pressure / self.state.rho);
+                }, else {
+                    u.set_index(i.uint(), 0.0.into());
+                });
+            });
+        };
+        update(&self.u, &self.mass_u, 0);
+        update(&self.v, &self.mass_v, 1);
+        if self.dimension == 3 {
+            update(&self.w, &self.mass_w, 2);
+        }
+    }
+    fn update_velocity_impl__(&self, dt: Expr<f32>) {
         // u = u - dt * grad(p)
         let i = dispatch_id();
 

@@ -6,7 +6,7 @@ use std::{
 
 use apic_fluid::{
     fluid::*,
-    pcgsolver::{PcgSolver, Preconditioner, Stencil, eigen_solve},
+    pcgsolver::{eigen_solve, PcgSolver, Preconditioner, Stencil},
     *,
 };
 use luisa::init_logger;
@@ -71,90 +71,20 @@ fn dambreak(device: Device, res: u32, dt: f32) {
             h,
             rho: 1.0,
             dimension: 3,
-            transfer: ParticleTransfer::Pic,
+            transfer: ParticleTransfer::Apic,
             advect: VelocityIntegration::Euler,
             preconditioner: Preconditioner::DiagJacobi,
         },
     );
-    for z in 0..30 {
-        for y in 0..30 {
-            for x in 0..50 {
-                let x = x as f32 * 0.04;
-                let y = y as f32 * 0.04 + 0.2;
-                let z = z as f32 * 0.04 + 0.01;
-                sim.particles_vec.push(Particle {
-                    pos: Float3::new(x, y, z),
-                    vel: Float3::new(0.0, -3.0, 0.0),
-                    radius: 0.7 * h,
-                    c_x: Float3::new(0.0, 0.0, 0.0),
-                    c_y: Float3::new(0.0, 0.0, 0.0),
-                    c_z: Float3::new(0.0, 0.0, 0.0),
-                })
-            }
-        }
-    }
-    sim.commit();
-    // let buf = Arc::new(Mutex::new(sim.particles_vec.clone()));
-    // let updated = Arc::new(AtomicBool::new(false));
-    let viewer = unsafe { cpp_extra::create_viewer(sim.particles_vec.len()) };
-
-    let viewer_thread = {
-        let viewer = viewer as u64;
-        std::thread::spawn(move || unsafe {
-            let viewer = viewer as *mut c_void;
-            cpp_extra::launch_viewer(viewer);
-        })
-    };
-    let mut buf = sim.particles_vec.clone();
-    let mut particle_pos = vec![0.0f32; buf.len() * 3];
-    while !viewer_thread.is_finished() {
-        unsafe {
-            sim.particles.as_ref().unwrap().copy_to(&mut buf);
-            for i in 0..buf.len() {
-                particle_pos[3 * i + 0] = buf[i].pos.x;
-                particle_pos[3 * i + 1] = buf[i].pos.y;
-                particle_pos[3 * i + 2] = buf[i].pos.z;
-            }
-            cpp_extra::viewer_set_points(viewer, particle_pos.as_ptr());
-        }
-        sim.step();
-        // let mut input = String::new();
-        // match std::io::stdin().read_line(&mut input) {
-        //     Ok(_goes_into_input_above) => {},
-        //     Err(_no_updates_is_fine) => {},
-        // }
-    }
-    unsafe {
-        cpp_extra::destroy_viewer(viewer);
-    }
-}
-fn stability(device: Device, res: u32, dt: f32) {
-    let extent = 2.0;
-    let h = extent / res as f32;
-    let mut sim = Simulation::new(
-        device.clone(),
-        SimulationSettings {
-            dt,
-            max_iterations: 1024,
-            tolerance: 1e-4,
-            res: [res, res, res],
-            h,
-            rho: 0.1,
-            dimension: 3,
-            transfer: ParticleTransfer::Pic,
-            advect: VelocityIntegration::Euler,
-            preconditioner: Preconditioner::Identity,
-        },
-    );
-    for z in 0..100 {
-        for y in 0..50 {
+    for z in 0..60 {
+        for y in 0..80 {
             for x in 0..100 {
                 let x = x as f32 * 0.02;
-                let y = y as f32 * 0.02 +0.2;
+                let y = y as f32 * 0.02;
                 let z = z as f32 * 0.02;
                 sim.particles_vec.push(Particle {
                     pos: Float3::new(x, y, z),
-                    vel: Float3::new(0.0, -10.0, 0.0),
+                    vel: Float3::new(0.0, 0.0, 0.0),
                     radius: 0.7 * h,
                     c_x: Float3::new(0.0, 0.0, 0.0),
                     c_y: Float3::new(0.0, 0.0, 0.0),
@@ -164,8 +94,9 @@ fn stability(device: Device, res: u32, dt: f32) {
         }
     }
     sim.commit();
-    // let buf = Arc::new(Mutex::new(sim.particles_vec.clone()));
-    // let updated = Arc::new(AtomicBool::new(false));
+    launch_viewer_for_sim(&mut sim);
+}
+fn launch_viewer_for_sim(sim:&mut Simulation) {
     let viewer = unsafe { cpp_extra::create_viewer(sim.particles_vec.len()) };
 
     let viewer_thread = {
@@ -177,6 +108,7 @@ fn stability(device: Device, res: u32, dt: f32) {
     };
     let mut buf = sim.particles_vec.clone();
     let mut particle_pos = vec![0.0f32; buf.len() * 3];
+    let mut particle_vel = vec![0.0f32; buf.len() * 3];
     while !viewer_thread.is_finished() {
         unsafe {
             sim.particles.as_ref().unwrap().copy_to(&mut buf);
@@ -184,8 +116,12 @@ fn stability(device: Device, res: u32, dt: f32) {
                 particle_pos[3 * i + 0] = buf[i].pos.x;
                 particle_pos[3 * i + 1] = buf[i].pos.y;
                 particle_pos[3 * i + 2] = buf[i].pos.z;
+
+                particle_vel[3 * i + 0] = buf[i].vel.x;
+                particle_vel[3 * i + 1] = buf[i].vel.y;
+                particle_vel[3 * i + 2] = buf[i].vel.z;
             }
-            cpp_extra::viewer_set_points(viewer, particle_pos.as_ptr());
+            cpp_extra::viewer_set_points(viewer, particle_pos.as_ptr(), particle_vel.as_ptr());
         }
         sim.step();
         // let mut input = String::new();
@@ -203,6 +139,6 @@ fn main() {
     init_logger();
     let ctx = Context::new(current_exe().unwrap());
     let device = ctx.create_cpu_device().unwrap();
-    // dambreak(device, 40, 0.01);
-    stability(device, 32, 1.0/30.0);
+    dambreak(device, 40, 1.0/30.0);
+    // stability(device, 32, 1.0/30.0);
 }

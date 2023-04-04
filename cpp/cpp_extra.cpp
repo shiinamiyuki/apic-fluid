@@ -23,12 +23,16 @@ struct Viewer
     igl::opengl::glfw::Viewer inner;
     int particle_count;
     Eigen::MatrixXd P;
-    std::vector<float> buf;
+    Eigen::MatrixXd C;
+    std::vector<float> pos_buf;
+    std::vector<float> vel_buf;
     bool updated = false;
     Viewer(int particle_count) : particle_count(particle_count)
     {
         P.resize(particle_count, 3);
-        buf.resize(particle_count * 3);
+        C.resize(particle_count, 3);
+        pos_buf.resize(particle_count * 3);
+        vel_buf.resize(particle_count * 3);
     }
 };
 extern "C"
@@ -42,14 +46,18 @@ extern "C"
             {
                 viewer->updated = false;
                 auto &P = viewer->P;
-                auto &points = viewer->buf;
+                auto &C = viewer->C;
+                auto &points = viewer->pos_buf;
+                auto& vel = viewer->vel_buf;
                 for (size_t i = 0; i < viewer->particle_count; i++)
                 {
 
                     P.row(i) = Eigen::RowVector3d(points[3 * i + 0], points[3 * i + 1], points[3 * i + 2]);
+                    Eigen::RowVector3d v = Eigen::RowVector3d(vel[3 * i + 0], vel[3 * i + 1], vel[3 * i + 2]);
+                    C.row(i) = Eigen::RowVector3d(0.1,0.1, 0.6) + Eigen::RowVector3d(1,1,1) * v.norm() / 3.0;
                 }
                 viewer->inner.data().point_size = 3;
-                viewer->inner.data().set_points(P, Eigen::RowVector3d(1, 1, 1));
+                viewer->inner.data().set_points(P, C);
             }
             return false;
         };
@@ -60,14 +68,16 @@ extern "C"
     {
         auto viewer = (Viewer *)viewer_;
         viewer->inner.core().is_animating = true;
+        viewer->inner.core().background_color = Eigen::Vector4f(0.1,0.1,0.1,1.0);
         viewer->inner.launch();
     }
 
-    void viewer_set_points(void *viewer_, const float *points)
+    void viewer_set_points(void *viewer_, const float *points, const float *velocity)
     {
         auto viewer = (Viewer *)viewer_;
         viewer->updated = true;
-        std::memcpy(viewer->buf.data(), points, sizeof(float) * viewer->particle_count * 3);
+        std::memcpy(viewer->pos_buf.data(), points, sizeof(float) * viewer->particle_count * 3);
+        std::memcpy(viewer->vel_buf.data(), velocity, sizeof(float) * viewer->particle_count * 3);
         // auto &P = viewer->P;
         // for (int i = 0; i < viewer->particle_count; i++)
         // {
