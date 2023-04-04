@@ -46,6 +46,7 @@ pub struct SimulationSettings {
     pub res: [u32; 3],
     pub h: f32,
     pub rho: f32,
+    pub g:f32,
     pub dimension: usize,
     pub transfer: ParticleTransfer,
     pub advect: VelocityIntegration,
@@ -157,6 +158,7 @@ impl Simulation {
         let div_velocity = make_pressure_grid();
         let zero_kernel = device
             .create_kernel_async::<(Buffer<f32>,)>(&|buf: BufferVar<f32>| {
+                set_block_size([512, 1, 1]);
                 let i = dispatch_id().x();
                 buf.write(i, 0.0);
             })
@@ -285,6 +287,7 @@ impl Simulation {
         self.build_particle_list_kernel = Some(
             self.device
                 .create_kernel_async::<()>(&|| {
+                    set_block_size([256, 1, 1]);
                     let i = dispatch_id().x();
                     let particles = self.particles.as_ref().unwrap();
                     let pt = particles.var().read(i);
@@ -330,6 +333,7 @@ impl Simulation {
         self.grid_to_particle_kernel = Some(
             self.device
                 .create_kernel_async::<()>(&|| {
+                    set_block_size([256, 1, 1]);
                     let particles = self.particles.as_ref().unwrap();
                     let pt_idx = dispatch_id().x();
                     let transfer = self.settings.transfer;
@@ -386,6 +390,7 @@ impl Simulation {
         self.advect_particle_kernel = Some(
             self.device
                 .create_kernel_async::<(f32,)>(&|dt: Expr<f32>| {
+                    set_block_size([256, 1, 1]);
                     let i = dispatch_id().x();
                     let particles = self.particles.as_ref().unwrap();
                     let pt = particles.var().read(i);
@@ -402,21 +407,21 @@ impl Simulation {
                         if_!(p_a.load().cmplt(lo.at(axis)), {
                             v_a.store(v_a.load().max(0.0));
                         });
-                         if_!(p_a.load().cmpgt(hi.at(axis)), {
+                        if_!(p_a.load().cmpgt(hi.at(axis)), {
                             v_a.store(v_a.load().min(0.0));
                         });
                         let v_a = v_a.load();
                         match axis {
-                            0=>{
+                            0 => {
                                 vel.store(vel.load().set_x(v_a));
                             }
-                            1=>{
+                            1 => {
                                 vel.store(vel.load().set_y(v_a));
                             }
-                            2=>{
+                            2 => {
                                 vel.store(vel.load().set_z(v_a));
                             }
-                            _=>unreachable!()
+                            _ => unreachable!(),
                         }
                     }
                     let new_pos = new_pos.clamp(lo, hi);
@@ -430,7 +435,7 @@ impl Simulation {
                 .create_kernel_async::<(f32,)>(&|dt: Expr<f32>| {
                     let p = dispatch_id();
                     let v = self.v.at_index(p);
-                    self.v.set_index(p, v - 0.981 * dt);
+                    self.v.set_index(p, v - self.settings.g * dt);
                 })
                 .unwrap(),
         );
@@ -470,6 +475,7 @@ impl Simulation {
         self.compute_cfl_kernel = Some(
             self.device
                 .create_kernel_async::<(Buffer<f32>,)>(&|tmp: BufferVar<f32>| {
+                    set_block_size([256, 1, 1]);
                     let i = dispatch_id().x();
                     let particles = self.particles.as_ref().unwrap().var();
                     let pt = particles.read(i);
@@ -754,6 +760,15 @@ impl Simulation {
     }
 
     pub fn advect_particle(&self, dt: f32) {
+        self.zero_kernel
+            .dispatch([self.u.values.len() as u32, 1, 1], &self.u.values)
+            .unwrap();
+        self.zero_kernel
+            .dispatch([self.v.values.len() as u32, 1, 1], &self.v.values)
+            .unwrap();
+        self.zero_kernel
+            .dispatch([self.w.values.len() as u32, 1, 1], &self.w.values)
+            .unwrap();
         self.advect_particle_kernel
             .as_ref()
             .unwrap()
@@ -938,16 +953,42 @@ impl Simulation {
                     2 => make_int3(0, 0, 1),
                     _ => unreachable!(),
                 };
+                let i_a = i.at(axis as usize);
                 let mass = mass_u.at_index(i.uint());
-                if_!(mass.cmpgt(0.0), {
+                if_!(mass.cmpgt(0.0) & i_a.cmpgt(0) & i_a.cmplt(u.res[axis as usize] - 1), {
                     let u_cur = u.at_index(i.uint());
-                    let grad_pressure =
-                        (self.p.at_index_or_zero(i) - self.p.at_index_or_zero(i - off)) / self.h();
-                    // let grad_pressure =
-                    //     (self.p.at_index((i + off).uint()) - self.p.at_index(i.uint())) / self.h();
+                    let phi_left = self.liquid_phi.at_index((i - off).uint());
+                    let phi_right = self.liquid_phi.at_index(i.uint());
+                    let both_in_fluid = phi_left.cmplt(0.0) & phi_right.cmplt(0.0);
+                    let both_in_air = phi_left.cmpge(0.0) & phi_right.cmpge(0.0);
+                    if_!(both_in_fluid, {
+                        let grad_pressure =
+                            (self.p.at_index(i.uint()) - self.p.at_index((i - off).uint())) / self.h();
+                        // let grad_pressure =
+                        //     (self.p.at_index((i + off).uint()) - self.p.at_index(i.uint())) / self.h();
 
-                    u.set_index(i.uint(), u_cur - dt * grad_pressure / self.state.rho);
-                }, else {
+                        u.set_index(i.uint(), u_cur - dt * grad_pressure / self.state.rho);
+                    }, else {
+                        if_!(!both_in_air, {
+                            if_!(phi_left.cmplt(0.0),{
+                                let theta = self.free_surface_theta(phi_left, phi_right).max(1e-2);
+                                let grad_pressure = (- self.p.at_index((i - off).uint())  /  theta) / self.h();
+                                u.set_index(i.uint(), u_cur - dt * grad_pressure / self.state.rho);
+                            }, else {
+                                let theta = self.free_surface_theta(phi_right, phi_left).max(1e-2);
+                                let grad_pressure = (self.p.at_index(i.uint())  /  theta) / self.h();
+                                u.set_index(i.uint(), u_cur - dt * grad_pressure / self.state.rho);
+                            });
+                        }, else {
+                            u.set_index(i.uint(), 0.0.into());
+                        });
+                    });
+                    // let grad_pressure =
+                    //         (self.p.at_index(i.uint()) - self.p.at_index((i - off).uint())) / self.h();
+
+                    // u.set_index(i.uint(), u_cur - dt * grad_pressure / self.state.rho);
+                }, else{
+                    // set component to zero
                     u.set_index(i.uint(), 0.0.into());
                 });
             });
@@ -956,66 +997,6 @@ impl Simulation {
         update(&self.v, &self.mass_v, 1);
         if self.dimension == 3 {
             update(&self.w, &self.mass_w, 2);
-        }
-    }
-    fn update_velocity_impl__(&self, dt: Expr<f32>) {
-        // u = u - dt * grad(p)
-        let i = dispatch_id();
-
-        let update = |u: &Grid<f32>, axis: u8| {
-            let i = i.int();
-            if_!(!u.oob(i), {
-                let off = match axis {
-                    0 => make_int3(1, 0, 0),
-                    1 => make_int3(0, 1, 0),
-                    2 => make_int3(0, 0, 1),
-                    _ => unreachable!(),
-                };
-                let i_a = i.at(axis as usize);
-                if_!(i_a.cmpgt(0) & i_a.cmplt(u.res[axis as usize] - 1), {
-                    let u_cur = u.at_index(i.uint());
-                    // let phi_left = self.liquid_phi.at_index((i - off).uint());
-                    // let phi_right = self.liquid_phi.at_index(i.uint());
-                    // let both_in_fluid = phi_left.cmplt(0.0) & phi_right.cmplt(0.0);
-                    // let both_in_air = phi_left.cmpge(0.0) & phi_right.cmpge(0.0);
-                    // if_!(both_in_fluid, {
-                    //     let grad_pressure =
-                    //         (self.p.at_index(i.uint()) - self.p.at_index((i - off).uint())) / self.h();
-                    //     // let grad_pressure =
-                    //     //     (self.p.at_index((i + off).uint()) - self.p.at_index(i.uint())) / self.h();
-
-                    //     u.set_index(i.uint(), u_cur - dt * grad_pressure / self.state.rho);
-                    // }, else {
-                    //     if_!(!both_in_air, {
-                    //         if_!(phi_left.cmplt(0.0),{
-                    //             let theta = self.free_surface_theta(phi_left, phi_right);
-                    //             let grad_pressure = (self.p.at_index(i.uint())  /  theta) / self.h();
-                    //             u.set_index(i.uint(), u_cur - dt * grad_pressure / self.state.rho);
-                    //         }, else {
-                    //             let theta = self.free_surface_theta(phi_right, phi_left);
-                    //             let grad_pressure = (- self.p.at_index((i - off).uint())  /  theta) / self.h();
-                    //             u.set_index(i.uint(), u_cur - dt * grad_pressure / self.state.rho);
-                    //         });
-                    //     }, else {
-                    //         u.set_index(i.uint(), 0.0.into());
-                    //     });
-                    // });
-                    let grad_pressure =
-                            (self.p.at_index(i.uint()) - self.p.at_index((i - off).uint())) / self.h();
-                        // let grad_pressure =
-                        //     (self.p.at_index((i + off).uint()) - self.p.at_index(i.uint())) / self.h();
-
-                    u.set_index(i.uint(), u_cur - dt * grad_pressure / self.state.rho);
-                }, else{
-                    // set component to zero
-                    u.set_index(i.uint(), 0.0.into());
-                });
-            });
-        };
-        update(&self.u, 0);
-        update(&self.v, 1);
-        if self.dimension == 3 {
-            update(&self.w, 2);
         }
     }
     fn compute_cfl(&mut self) {

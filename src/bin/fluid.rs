@@ -69,9 +69,10 @@ fn dambreak(device: Device, res: u32, dt: f32) {
             tolerance: 1e-5,
             res: [res, res, res * 2],
             h,
-            rho: 1.0,
+            g: 0.5,
+            rho: 10.0,
             dimension: 3,
-            transfer: ParticleTransfer::Apic,
+            transfer: ParticleTransfer::PicFlip(0.95),
             advect: VelocityIntegration::Euler,
             preconditioner: Preconditioner::DiagJacobi,
         },
@@ -85,7 +86,7 @@ fn dambreak(device: Device, res: u32, dt: f32) {
                 sim.particles_vec.push(Particle {
                     pos: Float3::new(x, y, z),
                     vel: Float3::new(0.0, 0.0, 0.0),
-                    radius: 0.7 * h,
+                    radius: h / (3.0f32).sqrt(),
                     c_x: Float3::new(0.0, 0.0, 0.0),
                     c_y: Float3::new(0.0, 0.0, 0.0),
                     c_z: Float3::new(0.0, 0.0, 0.0),
@@ -96,7 +97,7 @@ fn dambreak(device: Device, res: u32, dt: f32) {
     sim.commit();
     launch_viewer_for_sim(&mut sim);
 }
-fn launch_viewer_for_sim(sim:&mut Simulation) {
+fn launch_viewer_for_sim(sim: &mut Simulation) {
     let viewer = unsafe { cpp_extra::create_viewer(sim.particles_vec.len()) };
 
     let viewer_thread = {
@@ -139,6 +140,6 @@ fn main() {
     init_logger();
     let ctx = Context::new(current_exe().unwrap());
     let device = ctx.create_cpu_device().unwrap();
-    dambreak(device, 40, 1.0/30.0);
+    dambreak(device, 40, 1.0 / 30.0);
     // stability(device, 32, 1.0/30.0);
 }
