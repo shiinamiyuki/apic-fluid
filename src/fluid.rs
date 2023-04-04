@@ -91,6 +91,7 @@ pub struct Simulation {
     build_particle_list_kernel: Option<Kernel<()>>,
     particle_to_grid_kernel: Option<Kernel<()>>,
     grid_to_particle_kernel: Option<Kernel<()>>,
+    enforce_boundary_kernel: Option<Kernel<()>>,
     velocity_update_kernel: Option<Kernel<(f32,)>>,
     compute_cfl_kernel: Option<Kernel<(Buffer<f32>,)>>,
     fluid_mass_kernel: Option<Kernel<()>>,
@@ -195,6 +196,7 @@ impl Simulation {
             velocity_update_kernel: None,
             compute_cfl_kernel: None,
             fluid_mass_kernel: None,
+            enforce_boundary_kernel: None,
             cfl_tmp: device.create_buffer(1024).unwrap(),
             device: device.clone(),
             zero_kernel,
@@ -253,8 +255,6 @@ impl Simulation {
                 .create_buffer_from_slice(&self.particles_vec)
                 .unwrap(),
         );
-        self.u.init_particle_list(self.particles_vec.len());
-        self.v.init_particle_list(self.particles_vec.len());
         self.p.init_particle_list(self.particles_vec.len());
         let p_res = self.p.res;
         self.solver = Some(PcgSolver::new(
@@ -288,11 +288,6 @@ impl Simulation {
                     let i = dispatch_id().x();
                     let particles = self.particles.as_ref().unwrap();
                     let pt = particles.var().read(i);
-                    self.u.add_to_cell(pt.pos(), i);
-                    self.v.add_to_cell(pt.pos(), i);
-                    if self.dimension == 3 {
-                        self.w.add_to_cell(pt.pos(), i);
-                    }
                     self.p.add_to_cell(pt.pos(), i);
                 })
                 .unwrap(),
@@ -311,24 +306,35 @@ impl Simulation {
                         }
                         ParticleTransfer::Apic => (0.0, 0.0, 1.0),
                     };
-                    let map = |g: &Grid<f32>, axis: u8| {
-                        if_!(!g.oob(cell_idx.int()), {
-                            self.transfer_particles_to_grid_impl(
-                                g,
-                                particles,
-                                cell_idx,
-                                axis,
-                                pic_weight,
-                                flip_weight,
-                                apic_weight,
-                            )
-                        });
-                    };
-                    map(&self.u, 0);
-                    map(&self.v, 1);
-                    if self.dimension == 3 {
-                        map(&self.w, 2);
+                    for axis in 0..self.dimension {
+                        self.transfer_particles_to_grid_impl(
+                            &self.p,
+                            particles,
+                            cell_idx,
+                            axis,
+                            pic_weight,
+                            flip_weight,
+                            apic_weight,
+                        );
                     }
+                    // let map = |g: &Grid<f32>, axis: u8| {
+                    //     if_!(!g.oob(cell_idx.int()), {
+                    //         self.transfer_particles_to_grid_impl(
+                    //             g,
+                    //             particles,
+                    //             cell_idx,
+                    //             axis,
+                    //             pic_weight,
+                    //             flip_weight,
+                    //             apic_weight,
+                    //         )
+                    //     });
+                    // };
+                    // map(&self.u, 0);
+                    // map(&self.v, 1);
+                    // if self.dimension == 3 {
+                    //     map(&self.w, 2);
+                    // }
                 })
                 .unwrap(),
         );
@@ -374,13 +380,14 @@ impl Simulation {
                     let phi = var!(f32, self.h());
                     let node_pos = self.p.pos_i_to_f(node.int());
                     let count = var!(u32, 0);
-                    self.p.for_each_particle_in_neighbor(node, |pt_idx| {
-                        let pt = particles.var().read(pt_idx);
-                        let new_phi = pt.pos().distance(node_pos) - pt.radius();
-                        // cpu_dbg!(pt.pos().distance(node_pos));
-                        phi.store(phi.load().min(new_phi));
-                        count.store(count.load() + 1);
-                    });
+                    self.p
+                        .for_each_particle_in_neighbor(node, [-1, -1, -1], [1, 1, 1], |pt_idx| {
+                            let pt = particles.var().read(pt_idx);
+                            let new_phi = pt.pos().distance(node_pos) - pt.radius();
+                            // cpu_dbg!(pt.pos().distance(node_pos));
+                            phi.store(phi.load().min(new_phi));
+                            count.store(count.load() + 1);
+                        });
                     // cpu_dbg!(count.load());
                     // cpu_dbg!(make_uint4(node.x(), node.y(), node.z(), count.load()));
                     self.liquid_phi.set_index(node, phi.load());
@@ -396,7 +403,7 @@ impl Simulation {
                     let new_pos = pt.pos() + pt.vel() * dt;
                     let lo = Float3Expr::zero();
                     let hi = make_uint3(self.res[0], self.res[1], self.res[2]).float() * self.h();
-                    let new_pos = new_pos.clamp(lo, hi - self.h() * 1.01);
+                    let new_pos = new_pos.clamp(lo - 0.5 * self.h(), hi - self.h() * 0.5);
                     let pt = pt.set_pos(new_pos);
                     particles.var().write(i, pt);
                 })
@@ -430,6 +437,20 @@ impl Simulation {
                 .create_kernel_async::<(f32,)>(&|dt: Expr<f32>| self.update_velocity_impl(dt))
                 .unwrap(),
         );
+        self.enforce_boundary_kernel = Some(
+            self.device
+                .create_kernel_async::<()>(&|| {
+                    let map = |g: &Grid<f32>, axis: usize| {
+                        self.enforce_boundary_impl(g, axis);
+                    };
+                    map(&self.u, 0);
+                    map(&self.v, 1);
+                    if self.dimension == 3 {
+                        map(&self.w, 2);
+                    }
+                })
+                .unwrap(),
+        );
         self.compute_cfl_kernel = Some(
             self.device
                 .create_kernel_async::<(Buffer<f32>,)>(&|tmp: BufferVar<f32>| {
@@ -447,7 +468,7 @@ impl Simulation {
         g: &Grid<f32>,
         particles: &Buffer<Particle>,
         cell_idx: Expr<Uint3>,
-        axis: u8,
+        axis: usize,
         pic_weight: f32,
         flip_weight: f32,
         apic_weight: f32,
@@ -462,15 +483,20 @@ impl Simulation {
         let apic_mv = var!(f32); // momentum
 
         let m = var!(f32); // mass
-
-        g.for_each_particle_in_neighbor(cell_idx, |pt_idx| {
+        let (lo, hi) = match axis {
+            0 => ([-1, -1, -1], [0, 1, 1]),
+            1 => ([-1, -1, -1], [1, 0, 1]),
+            2 => ([-1, -1, -1], [1, 1, 0]),
+            _ => unreachable!(),
+        };
+        g.for_each_particle_in_neighbor(cell_idx, lo, hi, |pt_idx| {
             let pt = particles.var().read(pt_idx);
             let v_p = pt.vel();
             let offset = (pt.pos() - cell_pos) / g.dx;
-            if_!(!offset.abs().cmple(1.0001).all(), {
-                cpu_dbg!(offset);
-            });
-            assert(offset.abs().cmple(1.0001).all());
+            // if_!(!offset.abs().cmple(1.001).all(), {
+            //     cpu_dbg!(offset);
+            // });
+            // assert(offset.abs().cmple(1.001).all());
             let w_p = trilinear_weight(offset, self.dimension);
             let m_p = 1.0;
             let v_pa = match axis {
@@ -772,9 +798,6 @@ impl Simulation {
         // dbg!(&self.v.values.copy_to_vec());
     }
     fn transfer_particles_to_grid(&self) {
-        self.u.reset_particle_list();
-        self.v.reset_particle_list();
-        self.w.reset_particle_list();
         self.p.reset_particle_list();
         self.build_particle_list_kernel
             .as_ref()
@@ -785,7 +808,7 @@ impl Simulation {
         self.particle_to_grid_kernel
             .as_ref()
             .unwrap()
-            .dispatch(self.res_p1)
+            .dispatch(self.p.res)
             .unwrap();
     }
     fn transfer_grid_to_particles(&self) {
@@ -838,9 +861,11 @@ impl Simulation {
             });
             profile("apply_ext_forces", || {
                 self.apply_ext_forces(dt);
+                self.enforce_boundary();
             });
             profile("solve_pressure", || {
                 self.solve_pressure(dt);
+                self.enforce_boundary();
             });
             profile("transfer_grid_to_particles", || {
                 self.transfer_grid_to_particles();
@@ -855,6 +880,24 @@ impl Simulation {
     fn free_surface_theta(&self, cur_phi: Expr<f32>, neighbor_phi: Expr<f32>) -> Expr<f32> {
         assert(cur_phi.cmplt(0.0));
         cur_phi / (neighbor_phi - cur_phi)
+    }
+    fn enforce_boundary_impl(&self, g: &Grid<f32>, axis: usize) {
+        let x = dispatch_id();
+        let x_a = x.at(axis);
+        if_!(!g.oob(x.int()), {
+            if_!(x_a.cmpeq(0) | x_a.cmpeq(g.res[axis] - 1), {
+                g.set_index(x, 0.0.into())
+            })
+        });
+    }
+
+    // Make sure the velocity is zero on grid boundaries
+    fn enforce_boundary(&self) {
+        self.enforce_boundary_kernel
+            .as_ref()
+            .unwrap()
+            .dispatch(self.res_p1)
+            .unwrap();
     }
     fn update_velocity_impl(&self, dt: Expr<f32>) {
         // u = u - dt * grad(p)

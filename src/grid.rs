@@ -161,7 +161,7 @@ impl<T: Value> Grid<T> {
         p.float() * self.dx + make_float3(self.origin[0], self.origin[1], self.origin[2])
     }
     pub fn add_to_cell(&self, p: Expr<Float3>, i: Expr<u32>) {
-        let ip = self.pos_f_to_i(p);
+        let ip = self.pos_f_to_i(p + self.dx * 0.5);
         let oob = self.oob(ip);
         // cpu_dbg!(ip);
         // cpu_dbg!(p);
@@ -203,7 +203,13 @@ impl<T: Value> Grid<T> {
             .unwrap()
             .for_each_particle_in_cell(index, f);
     }
-    pub fn for_each_particle_in_neighbor(&self, node: Expr<Uint3>, f: impl Fn(Expr<u32>)) {
+    pub fn for_each_particle_in_neighbor(
+        &self,
+        node: Expr<Uint3>,
+        lo: [i32; 3],
+        hi: [i32; 3],
+        f: impl Fn(Expr<u32>),
+    ) {
         let f = &f;
         let map = |offset: [i32; 3]| {
             let offset = make_int3(offset[0], offset[1], offset[2]);
@@ -213,15 +219,26 @@ impl<T: Value> Grid<T> {
                 self.for_each_particle_in_cell(neighbor, f)
             })
         };
-        map([0, 0, 0]);
-        map([-1, 0, 0]);
-        map([0, -1, 0]);
-        map([-1, -1, 0]);
-        if self.dimension == 3 {
-            map([0, 0, -1]);
-            map([-1, 0, -1]);
-            map([0, -1, -1]);
-            map([-1, -1, -1]);
+        // map([0, 0, 0]);
+        // map([-1, 0, 0]);
+        // map([0, -1, 0]);
+        // map([-1, -1, 0]);
+        // if self.dimension == 3 {
+        //     map([0, 0, -1]);
+        //     map([-1, 0, -1]);
+        //     map([0, -1, -1]);
+        //     map([-1, -1, -1]);
+        // }
+        for i in lo[0]..=hi[0] {
+            for j in lo[1]..=hi[1] {
+                if self.dimension == 3 {
+                    for k in lo[2]..=hi[2] {
+                        map([i, j, k]);
+                    }
+                } else {
+                    map([i, j, 0]);
+                }
+            }
         }
     }
 }
