@@ -203,6 +203,6 @@ fn main() {
     init_logger();
     let ctx = Context::new(current_exe().unwrap());
     let device = ctx.create_cpu_device().unwrap();
-    dambreak(device, 40, 0.01);
-    // stability(device, 32, 1.0/30.0);
+    // dambreak(device, 40, 0.01);
+    stability(device, 32, 1.0/30.0);
 }

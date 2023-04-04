@@ -403,7 +403,7 @@ impl Simulation {
                     let new_pos = pt.pos() + pt.vel() * dt;
                     let lo = Float3Expr::zero();
                     let hi = make_uint3(self.res[0], self.res[1], self.res[2]).float() * self.h();
-                    let new_pos = new_pos.clamp(lo - 0.5 * self.h(), hi - self.h() * 0.5);
+                    let new_pos = new_pos.clamp(lo - 0.5 * self.h(), hi - self.h() * 0.5001);
                     let pt = pt.set_pos(new_pos);
                     particles.var().write(i, pt);
                 })
