@@ -70,23 +70,23 @@ fn dambreak(device: Device, res: u32, dt: f32) {
             res: [res, res, res * 2],
             h,
             g: 0.5,
-            rho: 10.0,
+            rho: 1.0,
             dimension: 3,
-            transfer: ParticleTransfer::PicFlip(0.95),
+            transfer: ParticleTransfer::Apic,
             advect: VelocityIntegration::Euler,
             preconditioner: Preconditioner::DiagJacobi,
         },
     );
-    for z in 0..60 {
+    for z in 0..50 {
         for y in 0..80 {
             for x in 0..100 {
                 let x = x as f32 * 0.02;
                 let y = y as f32 * 0.02;
-                let z = z as f32 * 0.02;
+                let z = z as f32 * 0.02 + 0.4;
                 sim.particles_vec.push(Particle {
                     pos: Float3::new(x, y, z),
                     vel: Float3::new(0.0, 0.0, 0.0),
-                    radius: h *0.7,//* (3.0f32).sqrt(),
+                    radius: h / (3.0f32).sqrt(),
                     c_x: Float3::new(0.0, 0.0, 0.0),
                     c_y: Float3::new(0.0, 0.0, 0.0),
                     c_z: Float3::new(0.0, 0.0, 0.0),
@@ -94,6 +94,36 @@ fn dambreak(device: Device, res: u32, dt: f32) {
             }
         }
     }
+    sim.commit();
+    launch_viewer_for_sim(&mut sim);
+}
+fn single_particle(device: Device, res: u32, dt: f32) {
+    let extent = 1.0;
+    let h = extent / res as f32;
+    let mut sim = Simulation::new(
+        device.clone(),
+        SimulationSettings {
+            dt,
+            max_iterations: 1024,
+            tolerance: 1e-5,
+            res: [res, res, res],
+            h,
+            g: 0.5,
+            rho: 10.0,
+            dimension: 3,
+            transfer: ParticleTransfer::Apic,
+            advect: VelocityIntegration::Euler,
+            preconditioner: Preconditioner::DiagJacobi,
+        },
+    );
+    sim.particles_vec.push(Particle {
+        pos: Float3::new(0.5, 1.0, 1.0),
+        vel: Float3::new(0.0, 0.0, 0.0),
+        radius: h * (3.0f32).sqrt(),
+        c_x: Float3::new(0.0, 0.0, 0.0),
+        c_y: Float3::new(0.0, 0.0, 0.0),
+        c_z: Float3::new(0.0, 0.0, 0.0),
+    });
     sim.commit();
     launch_viewer_for_sim(&mut sim);
 }
@@ -141,5 +171,6 @@ fn main() {
     let ctx = Context::new(current_exe().unwrap());
     let device = ctx.create_cpu_device().unwrap();
     dambreak(device, 40, 1.0 / 30.0);
+    // single_particle(device, 32, 1.0/30.0);
     // stability(device, 32, 1.0/30.0);
 }

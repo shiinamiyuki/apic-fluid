@@ -24,6 +24,7 @@ struct Viewer
     int particle_count;
     Eigen::MatrixXd P;
     Eigen::MatrixXd C;
+    Eigen::MatrixXd V;
     std::vector<float> pos_buf;
     std::vector<float> vel_buf;
     bool updated = false;
@@ -31,6 +32,7 @@ struct Viewer
     {
         P.resize(particle_count, 3);
         C.resize(particle_count, 3);
+        V.resize(particle_count, 3);
         pos_buf.resize(particle_count * 3);
         vel_buf.resize(particle_count * 3);
     }
@@ -47,6 +49,7 @@ extern "C"
                 viewer->updated = false;
                 auto &P = viewer->P;
                 auto &C = viewer->C;
+                auto &V = viewer->V;
                 auto &points = viewer->pos_buf;
                 auto& vel = viewer->vel_buf;
                 for (size_t i = 0; i < viewer->particle_count; i++)
@@ -54,10 +57,12 @@ extern "C"
 
                     P.row(i) = Eigen::RowVector3d(points[3 * i + 0], points[3 * i + 1], points[3 * i + 2]);
                     Eigen::RowVector3d v = Eigen::RowVector3d(vel[3 * i + 0], vel[3 * i + 1], vel[3 * i + 2]);
+                    V.row(i) = v * 0.3;
                     C.row(i) = Eigen::RowVector3d(0.1,0.1, 0.6) + Eigen::RowVector3d(1,1,1) * v.norm() / 3.0;
                 }
                 viewer->inner.data().point_size = 4;
                 viewer->inner.data().set_points(P, C);
+                // viewer->inner.data().set_edges_from_vector_field(P, V, Eigen::RowVector3d(1,0,0));
             }
             return false;
         };

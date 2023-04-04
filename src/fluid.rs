@@ -609,7 +609,7 @@ impl Simulation {
         let apic_c_pa = var!(Float3);
         let v_pa = v_p.at(axis as usize);
         g.for_each_neighbor_node(pt.pos(), |node| {
-            // if_!(has_value.at_index(node) | true, {
+            if_!(has_value.at_index(node), {
                 let node_pos = g.pos_i_to_f(node.int());
                 let v_i = g.at_index(node);
                 let old_v_i = old_g.at_index(node);
@@ -628,7 +628,7 @@ impl Simulation {
                 flip_v_pa.store(flip_v_pa.load() + diff_v * w_pa);
                 pic_v_pa.store(pic_v_pa.load() + v_i * w_pa);
                 apic_c_pa.store(apic_c_pa.load() + grad_w_pa * v_i);
-            // });
+            });
         });
         // TODO: check this
         let v_pa =
@@ -690,6 +690,7 @@ impl Simulation {
                     let both_in_air = phi_left.cmpgt(0.0) & phi_right.cmpgt(0.0);
                     has_value_u.set_index(x, !both_in_air & mass.cmpgt(0.0));
                 });
+                // has_value_u.set_index(x, true.into());
             });
         };
         map(&self.u, &self.mass_u, &self.has_value_u, 0);
@@ -754,9 +755,10 @@ impl Simulation {
                     let phi_y = self.fluid_phi.at_index(y.uint());
                     let mass = get_fluid_mass(offset_idx);
                     if_!(phi_y.cmpgt(0.0), {
-                        let theta = self.free_surface_theta(phi_x, phi_y).max(1e-2); // 1e-3 would make fluid explode
+                        let theta = self.free_surface_theta(phi_x, phi_y); // 1e-3 would make fluid explode
                         assert(theta.is_finite());
                         assert(theta.cmpge(0.0) & theta.cmple(1.0));
+                        let theta = theta.max(1e-2);
                         // 1 + (1 - theta) / theta = 1 / theta
                         diag.store(diag.load() + mass / theta * lhs_scale);
                         A_coeff.write(i * A.offsets.len() as u32 + offset_idx, 0.0);
@@ -883,14 +885,15 @@ impl Simulation {
             .unwrap();
         // dbg!(&self.v.values.copy_to_vec());
     }
-    fn transfer_particles_to_grid(&self) {
+    fn add_particles_to_cell(&self) {
         self.p.reset_particle_list();
         self.build_particle_list_kernel
             .as_ref()
             .unwrap()
             .dispatch([self.particles_vec.len() as u32, 1, 1])
             .unwrap();
-
+    }
+    fn transfer_particles_to_grid(&self) {
         self.particle_to_grid_kernel
             .as_ref()
             .unwrap()
@@ -936,15 +939,18 @@ impl Simulation {
             profile("advect_particle", || {
                 self.advect_particle(dt);
             });
-            profile("transfer_particles_to_grid", || {
-                self.transfer_particles_to_grid();
-                self.copy_velocity();
+            profile("add_particles_to_cell", || {
+                self.add_particles_to_cell();
             });
             profile("compute_fluid_phi", || {
                 self.compute_fluid_phi();
             });
             profile("compute_fluid_mass", || {
                 self.compute_fluid_mass();
+            });
+            profile("transfer_particles_to_grid", || {
+                self.transfer_particles_to_grid();
+                self.copy_velocity();
             });
             profile("apply_ext_forces", || {
                 self.apply_ext_forces(dt);
@@ -954,7 +960,7 @@ impl Simulation {
                 self.solve_pressure(dt);
             });
             profile("extrapolate_velocity", || {
-                // self.extrapolate_velocity();
+                self.extrapolate_velocity();
                 self.enforce_boundary();
             });
             profile("transfer_grid_to_particles", || {
@@ -1089,36 +1095,42 @@ impl Simulation {
                 if_!(mass.cmpgt(0.0) & i_a.cmpgt(0) & i_a.cmplt(u.res[axis as usize] - 1), {
                     let u_cur = u.at_index(i.uint());
                     // they should be equivalent due to pressure solve
-                    // let phi_left = self.fluid_phi.at_index((i - off).uint());
-                    // let phi_right = self.fluid_phi.at_index(i.uint());
-                    // let both_in_fluid = phi_left.cmplt(0.0) & phi_right.cmplt(0.0);
-                    // let both_in_air = phi_left.cmpge(0.0) & phi_right.cmpge(0.0);
-                    // if_!(both_in_fluid, {
-                    //     let grad_pressure =
-                    //         (self.p.at_index(i.uint()) - self.p.at_index((i - off).uint())) / self.h();
-                    //     // let grad_pressure =
-                    //     //     (self.p.at_index((i + off).uint()) - self.p.at_index(i.uint())) / self.h();
-
-                    //     u.set_index(i.uint(), u_cur - dt * grad_pressure / self.state.rho);
-                    // }, else {
-                    //     if_!(!both_in_air, {
-                    //         if_!(phi_left.cmplt(0.0),{
-                    //             let theta = self.free_surface_theta(phi_left, phi_right).max(1e-2);
-                    //             let grad_pressure = (- self.p.at_index((i - off).uint())  /  theta) / self.h();
-                    //             u.set_index(i.uint(), u_cur - dt * grad_pressure / self.state.rho);
-                    //         }, else {
-                    //             let theta = self.free_surface_theta(phi_right, phi_left).max(1e-2);
-                    //             let grad_pressure = (self.p.at_index(i.uint())  /  theta) / self.h();
-                    //             u.set_index(i.uint(), u_cur - dt * grad_pressure / self.state.rho);
-                    //         });
-                    //     }, else {
-                    //         u.set_index(i.uint(), 0.0.into());
-                    //     });
-                    // });
-                    let grad_pressure =
+                    let phi_left = self.fluid_phi.at_index((i - off).uint());
+                    let phi_right = self.fluid_phi.at_index(i.uint());
+                    let both_in_fluid = phi_left.cmplt(0.0) & phi_right.cmplt(0.0);
+                    let both_in_air = phi_left.cmpge(0.0) & phi_right.cmpge(0.0);
+                    if_!(both_in_fluid, {
+                        let grad_pressure =
                             (self.p.at_index(i.uint()) - self.p.at_index((i - off).uint())) / self.h();
+                        // let grad_pressure =
+                        //     (self.p.at_index((i + off).uint()) - self.p.at_index(i.uint())) / self.h();
 
-                    u.set_index(i.uint(), u_cur - dt * grad_pressure / self.state.rho);
+                        u.set_index(i.uint(), u_cur - dt * grad_pressure / self.state.rho);
+                    }, else {
+                        if_!(!both_in_air, {
+                            if_!(phi_left.cmplt(0.0),{
+                                let theta = self.free_surface_theta(phi_left, phi_right);
+                                assert(theta.is_finite());
+                                assert(theta.cmpge(0.0) & theta.cmple(1.0));
+                                let theta = theta.max(1e-2);
+                                let grad_pressure = (- self.p.at_index((i - off).uint())  /  theta) / self.h();
+                                u.set_index(i.uint(), u_cur - dt * grad_pressure / self.state.rho);
+                            }, else {
+                                let theta = self.free_surface_theta(phi_right, phi_left);
+                                assert(theta.is_finite());
+                                assert(theta.cmpge(0.0) & theta.cmple(1.0));
+                                let theta = theta.max(1e-2);
+                                let grad_pressure = (self.p.at_index(i.uint())  /  theta) / self.h();
+                                u.set_index(i.uint(), u_cur - dt * grad_pressure / self.state.rho);
+                            });
+                        }, else {
+                            u.set_index(i.uint(), u_cur);
+                        });
+                    });
+                    // let grad_pressure =
+                    //         (self.p.at_index(i.uint()) - self.p.at_index((i - off).uint())) / self.h();
+
+                    // u.set_index(i.uint(), u_cur - dt * grad_pressure / self.state.rho);
                 }, else{
                     // set component to zero
                     u.set_index(i.uint(), 0.0.into());
