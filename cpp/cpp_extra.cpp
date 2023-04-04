@@ -18,6 +18,8 @@
 //   viewer.data().set_mesh(V, F);
 //   viewer.launch();
 // }
+const int MODE_FREESURFACE = 0;
+const int MODE_TAGGED = 1;
 struct Viewer
 {
     igl::opengl::glfw::Viewer inner;
@@ -27,6 +29,7 @@ struct Viewer
     Eigen::MatrixXd V;
     std::vector<float> pos_buf;
     std::vector<float> vel_buf;
+    std::vector<int> tags;
     bool updated = false;
     Viewer(int particle_count) : particle_count(particle_count)
     {
@@ -35,6 +38,7 @@ struct Viewer
         V.resize(particle_count, 3);
         pos_buf.resize(particle_count * 3);
         vel_buf.resize(particle_count * 3);
+        tags.resize(particle_count, 0);
     }
 };
 extern "C"
@@ -50,6 +54,7 @@ extern "C"
                 auto &P = viewer->P;
                 auto &C = viewer->C;
                 auto &V = viewer->V;
+                auto &tags = viewer->tags;
                 auto &points = viewer->pos_buf;
                 auto& vel = viewer->vel_buf;
                 for (size_t i = 0; i < viewer->particle_count; i++)
@@ -58,7 +63,14 @@ extern "C"
                     P.row(i) = Eigen::RowVector3d(points[3 * i + 0], points[3 * i + 1], points[3 * i + 2]);
                     Eigen::RowVector3d v = Eigen::RowVector3d(vel[3 * i + 0], vel[3 * i + 1], vel[3 * i + 2]);
                     V.row(i) = v * 0.3;
-                    C.row(i) = Eigen::RowVector3d(0.1,0.1, 0.6) + Eigen::RowVector3d(1,1,1) * v.norm() / 3.0;
+                    Eigen::RowVector3d default_color = Eigen::RowVector3d(0.1,0.1, 0.6) + Eigen::RowVector3d(1,1,1) * v.norm() / 3.0;
+                    if (tags[i] == 0) {
+                        C.row(i) = default_color;
+                    } else if (tags[i] == 1){
+                        C.row(i) = Eigen::RowVector3d(0.3,0.1, 0.1) + Eigen::RowVector3d(1,0,0) * v.norm() / 3.0;
+                    } else if (tags[i] == 2){
+                        C.row(i) = Eigen::RowVector3d(0.1,0.1, 0.3) + Eigen::RowVector3d(0,0,1) * v.norm() / 3.0;
+                    }
                 }
                 viewer->inner.data().point_size = 4;
                 viewer->inner.data().set_points(P, C);
@@ -76,7 +88,10 @@ extern "C"
         viewer->inner.core().background_color = Eigen::Vector4f(0.1,0.1,0.1,1.0);
         viewer->inner.launch();
     }
-
+    void viewer_set_tags(void* viewer_, const int * tags) {
+        auto viewer = (Viewer *)viewer_;
+        std::memcpy(viewer->tags.data(), tags, sizeof(int) * viewer->particle_count);
+    }
     void viewer_set_points(void *viewer_, const float *points, const float *velocity)
     {
         auto viewer = (Viewer *)viewer_;

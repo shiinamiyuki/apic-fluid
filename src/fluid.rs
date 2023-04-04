@@ -14,11 +14,10 @@ pub struct Particle {
     pub c_x: Float3,
     pub c_y: Float3,
     pub c_z: Float3,
+
+    pub tag: u32,
 }
-pub mod cell_type {
-    pub const FLUID: u32 = 0;
-    pub const SOLID: u32 = 1;
-}
+
 #[derive(Clone, Copy)]
 pub enum ParticleTransfer {
     Pic,
@@ -111,6 +110,8 @@ pub struct Simulation {
     pub device: Device,
     state: State,
     cfl_tmp: Buffer<f32>,
+
+    pub log_volume: bool,
 }
 #[derive(Clone, Copy, PartialOrd, PartialEq, Debug)]
 pub enum VelocityIntegration {
@@ -183,6 +184,7 @@ impl Simulation {
             })
             .unwrap();
         Self {
+            log_volume: true,
             res_p1: [
                 res[0] + 1,
                 res[1] + 1,
@@ -746,42 +748,42 @@ impl Simulation {
                         let is_free_surface = var!(bool, false);
                         let thr = self.settings.seperation_threshold * dt;
                         match offset_idx {
-                            1=>{
-                                is_free_surface.store(x.x().cmpeq(self.p.res[0]-1) & self.u.at_index(x+make_uint3(1,0,0)).cmplt(-thr));
-                                if_!(is_free_surface.load(), {
-                                    du.store(du.load() + self.unit_mass() * self.u.at_index(x+make_uint3(1,0,0)));
-                                });
-                            }
-                            2=>{
-                                is_free_surface.store(x.x().cmpeq(0) & self.u.at_index(x).cmpgt(thr));
-                                if_!(is_free_surface.load(), {
-                                    du.store(du.load() - self.unit_mass() * self.u.at_index(x));
-                                });
-                            }
+                            // 1=>{
+                            //     is_free_surface.store(x.x().cmpeq(self.p.res[0]-1) & self.u.at_index(x+make_uint3(1,0,0)).cmplt(-thr));
+                            //     if_!(is_free_surface.load(), {
+                            //         du.store(du.load() + self.unit_mass() * self.u.at_index(x+make_uint3(1,0,0)));
+                            //     });
+                            // }
+                            // 2=>{
+                            //     is_free_surface.store(x.x().cmpeq(0) & self.u.at_index(x).cmpgt(thr));
+                            //     if_!(is_free_surface.load(), {
+                            //         du.store(du.load() - self.unit_mass() * self.u.at_index(x));
+                            //     });
+                            // }
                             3=>{
                                 is_free_surface.store(x.y().cmpeq(self.p.res[1]-1) & self.v.at_index(x+make_uint3(0,1,0)).cmplt(-thr));
                                 if_!(is_free_surface.load(), {
                                     dv.store(dv.load() + self.unit_mass() * self.v.at_index(x+make_uint3(0,1,0)));
                                 });
                             }
-                            4=>{
-                                is_free_surface.store(x.y().cmpeq(0) & self.v.at_index(x).cmpgt(thr));
-                                if_!(is_free_surface.load(), {
-                                    dv.store(dv.load() - self.unit_mass() * self.v.at_index(x));
-                                });
-                            }
-                            5=>{
-                                is_free_surface.store(x.z().cmpeq(self.p.res[2]-1) & self.w.at_index(x+make_uint3(0,0,1)).cmplt(-thr));
-                                if_!(is_free_surface.load(), {
-                                    dw.store(dw.load() + self.unit_mass() * self.w.at_index(x+make_uint3(0,0,1)));
-                                });
-                            }
-                            6=>{
-                                is_free_surface.store(x.z().cmpeq(0) & self.w.at_index(x).cmpgt(thr));
-                                if_!(is_free_surface.load(), {
-                                    dw.store(dw.load() - self.unit_mass() * self.w.at_index(x));
-                                });
-                            }
+                            // 4=>{
+                            //     is_free_surface.store(x.y().cmpeq(0) & self.v.at_index(x).cmpgt(thr));
+                            //     if_!(is_free_surface.load(), {
+                            //         dv.store(dv.load() - self.unit_mass() * self.v.at_index(x));
+                            //     });
+                            // }
+                            // 5=>{
+                            //     is_free_surface.store(x.z().cmpeq(self.p.res[2]-1) & self.w.at_index(x+make_uint3(0,0,1)).cmplt(-thr));
+                            //     if_!(is_free_surface.load(), {
+                            //         dw.store(dw.load() + self.unit_mass() * self.w.at_index(x+make_uint3(0,0,1)));
+                            //     });
+                            // }
+                            // 6=>{
+                            //     is_free_surface.store(x.z().cmpeq(0) & self.w.at_index(x).cmpgt(thr));
+                            //     if_!(is_free_surface.load(), {
+                            //         dw.store(dw.load() - self.unit_mass() * self.w.at_index(x));
+                            //     });
+                            // }
                             _=>{}
                         }
                         if_!(is_free_surface.load(), {
@@ -952,9 +954,11 @@ impl Simulation {
             .dispatch(self.p.res)
             .unwrap();
         // dbg!(self.fluid_phi.values.copy_to_vec());
-        let phi = self.fluid_phi.values.copy_to_vec();
-        let non_empty = phi.iter().filter(|&&x| x < 0.0).count();
-        log::info!("non empty cells: {}", non_empty);
+        if self.log_volume {
+            let phi = self.fluid_phi.values.copy_to_vec();
+            let non_empty = phi.iter().filter(|&&x| x < 0.0).count();
+            log::info!("non empty cells: {}", non_empty);
+        }
     }
     fn compute_fluid_mass(&self) {
         self.fluid_mass_kernel

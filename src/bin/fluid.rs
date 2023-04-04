@@ -9,7 +9,7 @@ use apic_fluid::{
     pcgsolver::{eigen_solve, PcgSolver, Preconditioner, Stencil},
     *,
 };
-use luisa::init_logger;
+use luisa::{glam::Vec3, init_logger};
 use parking_lot::Mutex;
 use rand::{rngs::StdRng, *};
 
@@ -72,10 +72,10 @@ fn dambreak(device: Device, res: u32, dt: f32) {
             g: 0.5,
             rho: 0.1,
             dimension: 3,
-            transfer: ParticleTransfer::PicFlip(0.95),
+            transfer: ParticleTransfer::Apic,
             advect: VelocityIntegration::Euler,
             preconditioner: Preconditioner::DiagJacobi,
-            force_wall_separation: false,
+            force_wall_separation: true,
             seperation_threshold: 0.0,
         },
     );
@@ -97,6 +97,7 @@ fn dambreak(device: Device, res: u32, dt: f32) {
                     c_x: Float3::new(0.0, 0.0, 0.0),
                     c_y: Float3::new(0.0, 0.0, 0.0),
                     c_z: Float3::new(0.0, 0.0, 0.0),
+                    tag: 0,
                 })
             }
         }
@@ -139,6 +140,7 @@ fn wave(device: Device, res: u32, dt: f32) {
                     c_x: Float3::new(0.0, 0.0, 0.0),
                     c_y: Float3::new(0.0, 0.0, 0.0),
                     c_z: Float3::new(0.0, 0.0, 0.0),
+                    tag: 0,
                 })
             }
         }
@@ -180,6 +182,7 @@ fn boundary(device: Device, res: u32, dt: f32) {
                     c_x: Float3::new(0.0, 0.0, 0.0),
                     c_y: Float3::new(0.0, 0.0, 0.0),
                     c_z: Float3::new(0.0, 0.0, 0.0),
+                    tag: 0,
                 })
             }
         }
@@ -187,7 +190,7 @@ fn boundary(device: Device, res: u32, dt: f32) {
     sim.commit();
     launch_viewer_for_sim(&mut sim);
 }
-fn crown(device: Device, res: u32, dt: f32) {
+fn splash(device: Device, res: u32, dt: f32) {
     let extent = 1.0;
     let h = extent / res as f32;
     let mut sim = Simulation::new(
@@ -216,11 +219,12 @@ fn crown(device: Device, res: u32, dt: f32) {
                 let z = z as f32 * 0.02 + 0.9;
                 sim.particles_vec.push(Particle {
                     pos: Float3::new(x, y, z),
-                    vel: Float3::new(0.0, -3.0, 0.0),
+                    vel: Float3::new(0.0, -5.0, 0.0),
                     radius: h * 0.5 * (3.0f32).sqrt(),
                     c_x: Float3::new(0.0, 0.0, 0.0),
                     c_y: Float3::new(0.0, 0.0, 0.0),
                     c_z: Float3::new(0.0, 0.0, 0.0),
+                    tag: 0,
                 })
             }
         }
@@ -239,6 +243,7 @@ fn crown(device: Device, res: u32, dt: f32) {
                     c_x: Float3::new(0.0, 0.0, 0.0),
                     c_y: Float3::new(0.0, 0.0, 0.0),
                     c_z: Float3::new(0.0, 0.0, 0.0),
+                    tag: 0,
                 })
             }
         }
@@ -246,6 +251,130 @@ fn crown(device: Device, res: u32, dt: f32) {
     sim.commit();
     launch_viewer_for_sim(&mut sim);
 }
+fn vortex(device: Device, res: u32, dt: f32) {
+    let extent = 1.0;
+    let h = extent / res as f32;
+    let mut sim = Simulation::new(
+        device.clone(),
+        SimulationSettings {
+            dt,
+            max_iterations: 1024,
+            tolerance: 1e-5,
+            res: [res, res, res],
+            h,
+            g: 0.0,
+            rho: 10.0,
+            dimension: 3,
+            transfer: ParticleTransfer::Apic,
+            advect: VelocityIntegration::Euler,
+            preconditioner: Preconditioner::DiagJacobi,
+            force_wall_separation: false,
+            seperation_threshold: 0.0,
+        },
+    );
+    sim.log_volume = false;
+    let mut color_particles = vec![];
+    let mut others = vec![];
+    let center1 = Vec3::new(0.5, 0.5, 0.2);
+    let center2 = Vec3::new(0.5, 0.5, 0.8);
+    let radius = 0.1;
+    let map = |p, c|{
+        let mut d:Vec3 = p - c;
+        d.z *= 6.0;
+        d.length() < radius
+    };
+    let n = 300;
+    for z in 0..n {
+        for y in 0..n {
+            for x in 0..n {
+                let x = x as f32 / n as f32;
+                let y = y as f32 / n as f32;
+                let z = z as f32 / n as f32;
+                let p = Vec3::new(x, y, z);
+                if map(p, center1) {
+                    color_particles.push(Particle {
+                        pos: Float3::new(x, y, z),
+                        vel: Float3::new(0.0, 0.0, 4.0),
+                        radius: h * 0.5 * (3.0f32).sqrt(),
+                        c_x: Float3::new(0.0, 0.0, 0.0),
+                        c_y: Float3::new(0.0, 0.0, 0.0),
+                        c_z: Float3::new(0.0, 0.0, 0.0),
+                        tag: 1,
+                    });
+                }
+                 else if map(p, center2){
+                    color_particles.push(Particle {
+                        pos: Float3::new(x, y, z),
+                        vel: Float3::new(0.0, 0.0, -4.0),
+                        radius: h * 0.5 * (3.0f32).sqrt(),
+                        c_x: Float3::new(0.0, 0.0, 0.0),
+                        c_y: Float3::new(0.0, 0.0, 0.0),
+                        c_z: Float3::new(0.0, 0.0, 0.0),
+                        tag: 2,
+                    });
+                }
+                else {
+                    others.push(Particle {
+                        pos: Float3::new(x, y, z),
+                        vel: Float3::new(0.0, 0.0, 0.0),
+                        radius: h * 0.5 * (3.0f32).sqrt(),
+                        c_x: Float3::new(0.0, 0.0, 0.0),
+                        c_y: Float3::new(0.0, 0.0, 0.0),
+                        c_z: Float3::new(0.0, 0.0, 0.0),
+                        tag: 0,
+                    });
+                }
+            }
+        }
+    }
+    for p in &color_particles {
+        sim.particles_vec.push(*p);
+    }
+    for p in &others {
+        sim.particles_vec.push(*p);
+    }
+    sim.commit();
+    launch_viewer_for_sim_with_tags(&mut sim, color_particles.len());
+}
+fn launch_viewer_for_sim_with_tags(sim: &mut Simulation, count: usize) {
+    let viewer = unsafe { cpp_extra::create_viewer(count) };
+
+    let viewer_thread = {
+        let viewer = viewer as u64;
+        std::thread::spawn(move || unsafe {
+            let viewer = viewer as *mut c_void;
+            cpp_extra::launch_viewer(viewer);
+        })
+    };
+    let mut buf = sim.particles_vec.clone();
+    let tags = buf[..count]
+        .iter()
+        .map(|p| p.tag as i32)
+        .collect::<Vec<_>>();
+    let mut particle_pos = vec![0.0f32; count * 3];
+    let mut particle_vel = vec![0.0f32; count * 3];
+    unsafe { cpp_extra::viewer_set_tags(viewer, tags.as_ptr()) }
+    while !viewer_thread.is_finished() {
+        unsafe {
+            sim.particles.as_ref().unwrap().copy_to(&mut buf);
+            for i in 0..count {
+                particle_pos[3 * i + 0] = buf[i].pos.x;
+                particle_pos[3 * i + 1] = buf[i].pos.y;
+                particle_pos[3 * i + 2] = buf[i].pos.z;
+
+                particle_vel[3 * i + 0] = buf[i].vel.x;
+                particle_vel[3 * i + 1] = buf[i].vel.y;
+                particle_vel[3 * i + 2] = buf[i].vel.z;
+            }
+            cpp_extra::viewer_set_points(viewer, particle_pos.as_ptr(), particle_vel.as_ptr());
+        }
+        sim.step();
+    }
+    unsafe {
+        cpp_extra::destroy_viewer(viewer);
+    }
+}
+
 fn launch_viewer_for_sim(sim: &mut Simulation) {
     let viewer = unsafe { cpp_extra::create_viewer(sim.particles_vec.len()) };
 
@@ -274,11 +403,6 @@ fn launch_viewer_for_sim(sim: &mut Simulation) {
             cpp_extra::viewer_set_points(viewer, particle_pos.as_ptr(), particle_vel.as_ptr());
         }
         sim.step();
-        // let mut input = String::new();
-        // match std::io::stdin().read_line(&mut input) {
-        //     Ok(_goes_into_input_above) => {},
-        //     Err(_no_updates_is_fine) => {},
-        // }
     }
     unsafe {
         cpp_extra::destroy_viewer(viewer);
@@ -289,9 +413,10 @@ fn main() {
     init_logger();
     let ctx = Context::new(current_exe().unwrap());
     let device = ctx.create_cpu_device().unwrap();
-    dambreak(device, 40, 1.0 / 30.0);
+    // vortex(device, 128, 1.0 / 30.0);
+    dambreak(device, 32, 1.0 / 30.0);
     // wave(device, 64, 1.0 / 30.0);
-    // crown(device, 40, 1.0 / 30.0);
+    // splash(device, 40, 1.0 / 30.0);
     // boundary(device, 64, 1.0/30.0);
     // stability(device, 32, 1.0/30.0);
 }
