@@ -86,7 +86,7 @@ fn dambreak(device: Device, res: u32, dt: f32) {
                 sim.particles_vec.push(Particle {
                     pos: Float3::new(x, y, z),
                     vel: Float3::new(0.0, 0.0, 0.0),
-                    radius: h / (3.0f32).sqrt(),
+                    radius: h *0.7,//* (3.0f32).sqrt(),
                     c_x: Float3::new(0.0, 0.0, 0.0),
                     c_y: Float3::new(0.0, 0.0, 0.0),
                     c_z: Float3::new(0.0, 0.0, 0.0),

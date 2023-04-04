@@ -56,7 +56,7 @@ extern "C"
                     Eigen::RowVector3d v = Eigen::RowVector3d(vel[3 * i + 0], vel[3 * i + 1], vel[3 * i + 2]);
                     C.row(i) = Eigen::RowVector3d(0.1,0.1, 0.6) + Eigen::RowVector3d(1,1,1) * v.norm() / 3.0;
                 }
-                viewer->inner.data().point_size = 3;
+                viewer->inner.data().point_size = 4;
                 viewer->inner.data().set_points(P, C);
             }
             return false;
