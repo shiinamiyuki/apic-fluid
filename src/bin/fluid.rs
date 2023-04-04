@@ -77,16 +77,21 @@ fn dambreak(device: Device, res: u32, dt: f32) {
             preconditioner: Preconditioner::DiagJacobi,
         },
     );
+    let mut rng = StdRng::seed_from_u64(0);
     for z in 0..50 {
-        for y in 0..80 {
+        for y in 0..70 {
             for x in 0..100 {
                 let x = x as f32 * 0.02;
                 let y = y as f32 * 0.02;
-                let z = z as f32 * 0.02 + 0.4;
+                let z = z as f32 * 0.02;
+
+                let x = x + (rng.gen::<f32>() - 0.5) * 0.01;
+                let y = y + (rng.gen::<f32>() - 0.5) * 0.01;
+                let z = z + (rng.gen::<f32>() - 0.5) * 0.01;
                 sim.particles_vec.push(Particle {
                     pos: Float3::new(x, y, z),
                     vel: Float3::new(0.0, 0.0, 0.0),
-                    radius: h / (3.0f32).sqrt(),
+                    radius: h * 0.5 * (3.0f32).sqrt(),
                     c_x: Float3::new(0.0, 0.0, 0.0),
                     c_y: Float3::new(0.0, 0.0, 0.0),
                     c_z: Float3::new(0.0, 0.0, 0.0),
@@ -97,7 +102,47 @@ fn dambreak(device: Device, res: u32, dt: f32) {
     sim.commit();
     launch_viewer_for_sim(&mut sim);
 }
-fn single_particle(device: Device, res: u32, dt: f32) {
+fn wave(device: Device, res: u32, dt: f32) {
+    let extent = 2.0;
+    let h = extent / res as f32;
+    let mut sim = Simulation::new(
+        device.clone(),
+        SimulationSettings {
+            dt,
+            max_iterations: 1024,
+            tolerance: 1e-5,
+            res: [res, res, res * 2],
+            h,
+            g: 0.5,
+            rho: 1.0,
+            dimension: 3,
+            transfer: ParticleTransfer::Apic,
+            advect: VelocityIntegration::Euler,
+            preconditioner: Preconditioner::DiagJacobi,
+        },
+    );
+    for z in 0..200 {
+        for y in 0..10 {
+            for x in 0..100 {
+                let x = x as f32 * 0.02;
+                let y = y as f32 * 0.02;
+                let z = z as f32 * 0.02;
+                let vel = if z < 0.4 { 1.0 } else { 0.0 };
+                sim.particles_vec.push(Particle {
+                    pos: Float3::new(x, y, z),
+                    vel: Float3::new(0.0, 0.0, vel),
+                    radius: h * 0.5 * (3.0f32).sqrt(),
+                    c_x: Float3::new(0.0, 0.0, 0.0),
+                    c_y: Float3::new(0.0, 0.0, 0.0),
+                    c_z: Float3::new(0.0, 0.0, 0.0),
+                })
+            }
+        }
+    }
+    sim.commit();
+    launch_viewer_for_sim(&mut sim);
+}
+fn boundary(device: Device, res: u32, dt: f32) {
     let extent = 1.0;
     let h = extent / res as f32;
     let mut sim = Simulation::new(
@@ -116,14 +161,80 @@ fn single_particle(device: Device, res: u32, dt: f32) {
             preconditioner: Preconditioner::DiagJacobi,
         },
     );
-    sim.particles_vec.push(Particle {
-        pos: Float3::new(0.5, 1.0, 1.0),
-        vel: Float3::new(0.0, 0.0, 0.0),
-        radius: h * (3.0f32).sqrt(),
-        c_x: Float3::new(0.0, 0.0, 0.0),
-        c_y: Float3::new(0.0, 0.0, 0.0),
-        c_z: Float3::new(0.0, 0.0, 0.0),
-    });
+    for z in 0..200 {
+        for y in 0..1 {
+            for x in 0..200 {
+                let x = x as f32 * 0.005;
+                let y = y as f32 * 0.005+1.0;
+                let z = z as f32 * 0.005;
+                sim.particles_vec.push(Particle {
+                    pos: Float3::new(x, y, z),
+                    vel: Float3::new(0.0, 0.0, 0.0),
+                    radius: h * 0.5 * (3.0f32).sqrt(),
+                    c_x: Float3::new(0.0, 0.0, 0.0),
+                    c_y: Float3::new(0.0, 0.0, 0.0),
+                    c_z: Float3::new(0.0, 0.0, 0.0),
+                })
+            }
+        }
+    }
+    sim.commit();
+    launch_viewer_for_sim(&mut sim);
+}
+fn crown(device: Device, res: u32, dt: f32) {
+    let extent = 1.0;
+    let h = extent / res as f32;
+    let mut sim = Simulation::new(
+        device.clone(),
+        SimulationSettings {
+            dt,
+            max_iterations: 1024,
+            tolerance: 1e-5,
+            res: [res * 2, res * 2, res * 2],
+            h,
+            g: 9.8,
+            rho: 10.0,
+            dimension: 3,
+            transfer: ParticleTransfer::Apic,
+            advect: VelocityIntegration::Euler,
+            preconditioner: Preconditioner::DiagJacobi,
+        },
+    );
+    for z in 0..10 {
+        for y in 0..10 {
+            for x in 0..10 {
+                let x = x as f32 * 0.02 + 0.9;
+                let y = y as f32 * 0.02 + 0.5;
+                let z = z as f32 * 0.02 + 0.9;
+                sim.particles_vec.push(Particle {
+                    pos: Float3::new(x, y, z),
+                    vel: Float3::new(0.0, -3.0, 0.0),
+                    radius: h * 0.5 * (3.0f32).sqrt(),
+                    c_x: Float3::new(0.0, 0.0, 0.0),
+                    c_y: Float3::new(0.0, 0.0, 0.0),
+                    c_z: Float3::new(0.0, 0.0, 0.0),
+                })
+            }
+        }
+    }
+
+    for z in 0..100 {
+        for y in 0..20 {
+            for x in 0..100 {
+                let x = x as f32 * 0.02;
+                let y = y as f32 * 0.02;
+                let z = z as f32 * 0.02;
+                sim.particles_vec.push(Particle {
+                    pos: Float3::new(x, y, z),
+                    vel: Float3::new(0.0, 0.0, 0.0),
+                    radius: h * 0.5 * (3.0f32).sqrt(),
+                    c_x: Float3::new(0.0, 0.0, 0.0),
+                    c_y: Float3::new(0.0, 0.0, 0.0),
+                    c_z: Float3::new(0.0, 0.0, 0.0),
+                })
+            }
+        }
+    }
     sim.commit();
     launch_viewer_for_sim(&mut sim);
 }
@@ -170,7 +281,9 @@ fn main() {
     init_logger();
     let ctx = Context::new(current_exe().unwrap());
     let device = ctx.create_cpu_device().unwrap();
-    dambreak(device, 40, 1.0 / 30.0);
-    // single_particle(device, 32, 1.0/30.0);
+    dambreak(device, 32, 1.0 / 30.0);
+    // wave(device, 64, 1.0 / 30.0);
+    // crown(device, 40, 1.0 / 30.0);
+    // boundary(device, 64, 1.0/30.0);
     // stability(device, 32, 1.0/30.0);
 }

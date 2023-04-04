@@ -857,10 +857,10 @@ impl Simulation {
             .dispatch([self.rhs.values.len() as u32, 1, 1], &self.rhs.values)
             .unwrap();
         // dbg!(&self.rhs.values.copy_to_vec());
-        solver
-            .zero
-            .dispatch([self.p.values.len() as u32, 1, 1], &self.p.values)
-            .unwrap();
+        // solver
+        //     .zero
+        //     .dispatch([self.p.values.len() as u32, 1, 1], &self.p.values)
+        //     .unwrap();
         self.build_linear_system_kernel
             .as_ref()
             .unwrap()
@@ -892,6 +892,20 @@ impl Simulation {
             .unwrap()
             .dispatch([self.particles_vec.len() as u32, 1, 1])
             .unwrap();
+        // {
+        //     let mut count = 0;
+        //     let list = self.p.cell_particle_list.as_ref().unwrap();
+        //     let head = list.head.copy_to_vec();
+        //     let next = list.next.copy_to_vec();
+        //     for h in &head {
+        //         let mut p = *h;
+        //         while p != u32::MAX {
+        //             count += 1;
+        //             p = next[p as usize];
+        //         }
+        //     }
+        //     assert_eq!(count, self.particles_vec.len());
+        // }
     }
     fn transfer_particles_to_grid(&self) {
         self.particle_to_grid_kernel

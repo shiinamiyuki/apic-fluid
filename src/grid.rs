@@ -177,27 +177,27 @@ impl<T: Value> Grid<T> {
     }
     pub fn add_to_cell(&self, p: Expr<Float3>, i: Expr<u32>) {
         let ip = self.pos_f_to_i(p + self.dx * 0.5);
-        let ip = self.clamp(ip);
-        let linear_index = self.linear_index(ip.uint());
-            self.cell_particle_list
-                .as_ref()
-                .unwrap()
-                .append(linear_index, i);
-        // let oob = self.oob(ip);
-        // // cpu_dbg!(ip);
-        // // cpu_dbg!(p);
-        // // cpu_dbg!(const_(self.dx));
-        // // cpu_dbg!((self.pos_i_to_f(ip) - p).length());
-        // if_!(!oob, {
-        //     let linear_index = self.linear_index(ip.uint());
+        // let ip = self.clamp(ip);
+        // let linear_index = self.linear_index(ip.uint());
         //     self.cell_particle_list
         //         .as_ref()
         //         .unwrap()
         //         .append(linear_index, i);
-        // }, else{
-        //     cpu_dbg!(ip);
-        //     cpu_dbg!(make_uint3(self.res[0], self.res[1], self.res[2]));
-        // });
+        let oob = self.oob(ip);
+        // cpu_dbg!(ip);
+        // cpu_dbg!(p);
+        // cpu_dbg!(const_(self.dx));
+        // cpu_dbg!((self.pos_i_to_f(ip) - p).length());
+        if_!(!oob, {
+            let linear_index = self.linear_index(ip.uint());
+            self.cell_particle_list
+                .as_ref()
+                .unwrap()
+                .append(linear_index, i);
+        }, else{
+            cpu_dbg!(ip);
+            cpu_dbg!(make_uint3(self.res[0], self.res[1], self.res[2]));
+        });
     }
     pub fn for_each_neighbor_node(&self, p: Expr<Float3>, f: impl Fn(Expr<Uint3>)) {
         let ip = self.pos_f_to_i(p);
