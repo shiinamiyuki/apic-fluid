@@ -306,35 +306,35 @@ impl Simulation {
                         }
                         ParticleTransfer::Apic => (0.0, 0.0, 1.0),
                     };
-                    for axis in 0..self.dimension {
-                        self.transfer_particles_to_grid_impl(
-                            &self.p,
-                            particles,
-                            cell_idx,
-                            axis,
-                            pic_weight,
-                            flip_weight,
-                            apic_weight,
-                        );
-                    }
-                    // let map = |g: &Grid<f32>, axis: u8| {
-                    //     if_!(!g.oob(cell_idx.int()), {
-                    //         self.transfer_particles_to_grid_impl(
-                    //             g,
-                    //             particles,
-                    //             cell_idx,
-                    //             axis,
-                    //             pic_weight,
-                    //             flip_weight,
-                    //             apic_weight,
-                    //         )
-                    //     });
-                    // };
-                    // map(&self.u, 0);
-                    // map(&self.v, 1);
-                    // if self.dimension == 3 {
-                    //     map(&self.w, 2);
+                    // for axis in 0..self.dimension {
+                    //     self.transfer_particles_to_grid_impl(
+                    //         &self.p,
+                    //         particles,
+                    //         cell_idx,
+                    //         axis,
+                    //         pic_weight,
+                    //         flip_weight,
+                    //         apic_weight,
+                    //     );
                     // }
+                    let map = |g: &Grid<f32>, axis: usize| {
+                        if_!(!g.oob(cell_idx.int()), {
+                            self.transfer_particles_to_grid_impl(
+                                g,
+                                particles,
+                                cell_idx,
+                                axis,
+                                pic_weight,
+                                flip_weight,
+                                apic_weight,
+                            )
+                        });
+                    };
+                    map(&self.u, 0);
+                    map(&self.v, 1);
+                    if self.dimension == 3 {
+                        map(&self.w, 2);
+                    }
                 })
                 .unwrap(),
         );
@@ -377,7 +377,7 @@ impl Simulation {
                 .create_kernel_async::<()>(&|| {
                     let node = dispatch_id();
                     let particles = self.particles.as_ref().unwrap();
-                    let phi = var!(f32, self.h());
+                    let phi = var!(f32, self.h() * (self.dimension as f32).sqrt());
                     let node_pos = self.p.pos_i_to_f(node.int());
                     let count = var!(u32, 0);
                     self.p
@@ -489,7 +489,7 @@ impl Simulation {
             2 => ([-1, -1, -1], [1, 1, 0]),
             _ => unreachable!(),
         };
-        g.for_each_particle_in_neighbor(cell_idx, lo, hi, |pt_idx| {
+        self.p.for_each_particle_in_neighbor(cell_idx, lo, hi, |pt_idx| {
             let pt = particles.var().read(pt_idx);
             let v_p = pt.vel();
             let offset = (pt.pos() - cell_pos) / g.dx;
@@ -498,6 +498,8 @@ impl Simulation {
             // });
             // assert(offset.abs().cmple(1.001).all());
             let w_p = trilinear_weight(offset, self.dimension);
+            // cpu_dbg!(w_p);
+            assert(w_p.cmpge(0.0) & w_p.cmple(1.0));
             let m_p = 1.0;
             let v_pa = match axis {
                 0 => v_p.x(),
@@ -561,6 +563,7 @@ impl Simulation {
             // cpu_dbg!(pt.pos());
             // cpu_dbg!(node_pos);
             let w_pa = trilinear_weight(offset, self.dimension);
+            assert(w_pa.cmpge(0.0) & w_pa.cmple(1.0));
             // TODO: should i divide dx?
             let grad_w_pa = grad_trilinear_weight(offset, self.dimension) / g.dx;
 
@@ -604,13 +607,14 @@ impl Simulation {
             if_!(!u.oob(x.int()), {
                 let x_a = x.at(axis);
                 let mass = if_!(x_a.cmpeq(0) | x_a.cmpeq(u.res[axis] - 1), {
-                    const_(0.0f32)
+                    const_(0.5f32)
                 }, else {
-                    if_!(x.cmpeq(0).any() | x.cmpeq(make_uint3(u.res[0], u.res[1], u.res[2]) - 1).any(), {
-                        const_(0.5f32)
-                    }, else {
-                        const_(1.0f32)
-                    })
+                    // if_!(x.cmpeq(0).any() | x.cmpeq(make_uint3(u.res[0], u.res[1], u.res[2]) - 1).any(), {
+                    //     const_(0.5f32)
+                    // }, else {
+                    //     const_(1.0f32)
+                    // })
+                    const_(1.0f32)
                 });
                 mass_u.set_index(x, mass * unit_mass);
             });
@@ -781,14 +785,14 @@ impl Simulation {
         // dbg!(&self.v.values.copy_to_vec());
         // dbg!(&A.coeff.copy_to_vec());
         // dbg!(&self.rhs.values.copy_to_vec());
-        let i = solver.solve(self.A.as_ref().unwrap(), &self.rhs.values, &self.p.values);
-        if i.is_none() {
-            log::warn!("pressure solver failed");
-        } else {
-            log::info!("pressure solve finished in {} iterations", i.unwrap());
-        }
+        // let i = solver.solve(self.A.as_ref().unwrap(), &self.rhs.values, &self.p.values);
+        // if i.is_none() {
+        //     log::warn!("pressure solver failed");
+        // } else {
+        //     log::info!("pressure solve finished in {} iterations", i.unwrap());
+        // }
 
-        // pcgsolver::eigen_solve(self.A.as_ref().unwrap(), &self.rhs.values, &self.p.values);
+        pcgsolver::eigen_solve(self.A.as_ref().unwrap(), &self.rhs.values, &self.p.values);
 
         self.velocity_update_kernel
             .as_ref()
