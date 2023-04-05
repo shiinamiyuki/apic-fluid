@@ -113,36 +113,41 @@ impl PcgSolver {
                             let sum = var!(f32, 0.0);
                             let m = var!(f32, 1.0);
                             let c = var!(u32, 1);
-                            while_!(c.load().cmplt(noffsets), {
-                                let off = A.offsets.read(c.load());
-                                let p = make_uint3(ix, iy, iz).int() + off;
-                                if_!(
-                                    p.cmpge(0).all()
-                                        & p.cmplt(make_uint3(n[0], n[1], n[2]).int()).all(),
-                                    {
-                                        let p = p.uint();
-                                        let ip = p.x() + p.y() * n[0] + p.z() * n[0] * n[1];
-                                        if cfg!(debug_assertions) {
-                                            if_!(A.coeff.read(ip * noffsets).cmplt(0.0), {
-                                                cpu_dbg!(A.coeff.read(ip * noffsets));
+                            let diag_i = A.coeff.read(i * noffsets);
+                            if_!(diag_i.cmpeq(0.0), {
+                                    out.write(i, x.read(i));
+                                }, else{
+                                while_!(c.load().cmplt(noffsets), {
+                                    let off = A.offsets.read(c.load());
+                                    let p = make_uint3(ix, iy, iz).int() + off;
+                                    if_!(
+                                        p.cmpge(0).all()
+                                            & p.cmplt(make_uint3(n[0], n[1], n[2]).int()).all(),
+                                        {
+                                            let p = p.uint();
+                                            let ip = p.x() + p.y() * n[0] + p.z() * n[0] * n[1];
+                                            if cfg!(debug_assertions) {
+                                                if_!(A.coeff.read(ip * noffsets).cmplt(0.0), {
+                                                    cpu_dbg!(A.coeff.read(ip * noffsets));
+                                                });
+                                            }
+                                            let diag = A.coeff.read(ip * noffsets).max(1e-2);
+                                            let mp =
+                                                select(diag.cmpeq(0.0), const_(0.0f32), 1.0 / diag);
+                                            // cpu_dbg!(mp);
+                                            sum.store(sum.load() + x.read(ip) * mp);
+                                            if_!((c.load() % 2).cmpeq(0), {
+                                                m.store(m.load() + mp * mp);
                                             });
                                         }
-                                        let diag = A.coeff.read(ip * noffsets);
-                                        let mp =
-                                            select(diag.cmpeq(0.0), const_(0.0f32), 1.0 / diag);
-                                        sum.store(sum.load() + x.read(ip) * mp);
-                                        if_!((c.load() % 2).cmpeq(1), {
-                                            m.store(m.load() + mp * mp);
-                                        });
-                                    }
-                                );
-                                // m.store()
+                                    );
 
-                                c.store(c.load() + 1);
+                                    c.store(c.load() + 1);
+                                });
+                                // cpu_dbg!(m.load());
+                                sum.store(sum.load() + x.read(i) * m.load());
+                                out.write(i, sum.load());
                             });
-                            // cpu_dbg!(m.load());
-                            sum.store(sum.load() + x.read(i) * m.load());
-                            out.write(i, sum.load());
                         }
                     }
                 },
@@ -354,6 +359,42 @@ extern "C" {
         out: *mut f32,
     );
 }
+#[link(name = "cpp_extra")]
+extern "C" {
+    pub fn bridson_pcg_solve(
+        nx: i32,
+        ny: i32,
+        nz: i32,
+        stencil: *const f32,
+        offsets: *const i32,
+        noffsets: i32,
+        b: *const f32,
+        out: *mut f32,
+    );
+}
+pub fn bridson_solve(stencil: &Stencil, b: &Buffer<f32>, out: &Buffer<f32>) {
+    assert_eq!(stencil.n[0] * stencil.n[1] * stencil.n[2], b.len() as u32);
+    assert_eq!(stencil.n[0] * stencil.n[1] * stencil.n[2], out.len() as u32);
+    let coeff = stencil.coeff.copy_to_vec();
+    let offsets = stencil.offsets.copy_to_vec();
+    let offsets = offsets.iter().map(|x| [x.x, x.y, x.z]).collect::<Vec<_>>();
+    let b = b.copy_to_vec();
+    let mut out_ = out.copy_to_vec();
+    unsafe {
+        bridson_pcg_solve(
+            stencil.n[0] as i32,
+            stencil.n[1] as i32,
+            stencil.n[2] as i32,
+            coeff.as_ptr(),
+            offsets.as_ptr() as *const i32,
+            offsets.len() as i32,
+            b.as_ptr(),
+            out_.as_mut_ptr() as *mut f32,
+        );
+    }
+    out.copy_from(&out_);
+}
+
 pub fn eigen_solve(stencil: &Stencil, b: &Buffer<f32>, out: &Buffer<f32>) {
     assert_eq!(stencil.n[0] * stencil.n[1] * stencil.n[2], b.len() as u32);
     assert_eq!(stencil.n[0] * stencil.n[1] * stencil.n[2], out.len() as u32);

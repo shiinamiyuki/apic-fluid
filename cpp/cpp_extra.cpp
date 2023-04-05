@@ -4,6 +4,7 @@
 
 #include <iostream>
 #include <igl/opengl/glfw/Viewer.h>
+#include "pcg_solver.h"
 
 // Eigen::MatrixXd V;
 // Eigen::MatrixXi F;
@@ -56,20 +57,25 @@ extern "C"
                 auto &V = viewer->V;
                 auto &tags = viewer->tags;
                 auto &points = viewer->pos_buf;
-                auto& vel = viewer->vel_buf;
+                auto &vel = viewer->vel_buf;
                 for (size_t i = 0; i < viewer->particle_count; i++)
                 {
 
                     P.row(i) = Eigen::RowVector3d(points[3 * i + 0], points[3 * i + 1], points[3 * i + 2]);
                     Eigen::RowVector3d v = Eigen::RowVector3d(vel[3 * i + 0], vel[3 * i + 1], vel[3 * i + 2]);
                     V.row(i) = v * 0.3;
-                    Eigen::RowVector3d default_color = Eigen::RowVector3d(0.1,0.1, 0.6) + Eigen::RowVector3d(1,1,1) * v.norm() / 3.0;
-                    if (tags[i] == 0) {
+                    Eigen::RowVector3d default_color = Eigen::RowVector3d(0.1, 0.1, 0.6) + Eigen::RowVector3d(1, 1, 1) * v.norm() / 3.0;
+                    if (tags[i] == 0)
+                    {
                         C.row(i) = default_color;
-                    } else if (tags[i] == 1){
-                        C.row(i) = Eigen::RowVector3d(0.3,0.1, 0.1) + Eigen::RowVector3d(1,0,0) * v.norm() / 3.0;
-                    } else if (tags[i] == 2){
-                        C.row(i) = Eigen::RowVector3d(0.1,0.1, 0.3) + Eigen::RowVector3d(0,0,1) * v.norm() / 3.0;
+                    }
+                    else if (tags[i] == 1)
+                    {
+                        C.row(i) = Eigen::RowVector3d(0.3, 0.1, 0.1) + Eigen::RowVector3d(1, 0, 0) * v.norm() / 3.0;
+                    }
+                    else if (tags[i] == 2)
+                    {
+                        C.row(i) = Eigen::RowVector3d(0.1, 0.1, 0.3) + Eigen::RowVector3d(0, 0, 1) * v.norm() / 3.0;
                     }
                 }
                 viewer->inner.data().point_size = 4;
@@ -85,10 +91,11 @@ extern "C"
     {
         auto viewer = (Viewer *)viewer_;
         viewer->inner.core().is_animating = true;
-        viewer->inner.core().background_color = Eigen::Vector4f(0.1,0.1,0.1,1.0);
+        viewer->inner.core().background_color = Eigen::Vector4f(0.1, 0.1, 0.1, 1.0);
         viewer->inner.launch();
     }
-    void viewer_set_tags(void* viewer_, const int * tags) {
+    void viewer_set_tags(void *viewer_, const int *tags)
+    {
         auto viewer = (Viewer *)viewer_;
         std::memcpy(viewer->tags.data(), tags, sizeof(int) * viewer->particle_count);
     }
@@ -109,6 +116,52 @@ extern "C"
     {
         auto viewer = (Viewer *)viewer_;
         delete viewer;
+    }
+    // solve N x N linear system with a given stencil
+    void bridson_pcg_solve(int nx, int ny, int nz, const float *stencil, const int *offsets, int noffsets, const float *b, float *out)
+    {
+        auto N = nx * ny * nz;
+        robertbridson::PCGSolver<scalar> solver;
+        robertbridson::SparseMatrix<scalar> matrix(N);
+        std::vector<float> rhs(N), pressure(N);
+        std::memcpy(rhs.data(), b, sizeof(float) * N);
+        for (int z = 0; z < nz; ++z)
+        {
+            for (int y = 0; y < ny; ++y)
+            {
+                for (int x = 0; x < nx; ++x)
+                {
+                    int i = x + y * nx + z * nx * ny;
+                    // printf("%f\n", stencil[0]);
+                    // triplets.push_back(Eigen::Triplet<float>(i, i, stencil[i * noffsets]));
+                    matrix.add_to_element(i, i, stencil[i * noffsets]);
+                    for (int j = 1; j < noffsets; ++j)
+                    {
+                        auto off_x = offsets[j * 3 + 0];
+                        auto off_y = offsets[j * 3 + 1];
+                        auto off_z = offsets[j * 3 + 2];
+                        // fprintf(stderr, "off_x: %d, off_y: %d, off_z: %d\n", off_x, off_y, off_z);
+                        int idx = i + off_x + off_y * nx + off_z * nx * ny;
+                        if (x + off_x >= 0 && x + off_x < nx &&
+                            y + off_y >= 0 && y + off_y < ny &&
+                            z + off_z >= 0 && z + off_z < nz)
+                        {
+                            // triplets.push_back(Eigen::Triplet<float>(i, idx, stencil[i * noffsets + j]));
+                            matrix.add_to_element(i, idx, stencil[i * noffsets + j]);
+                        }
+                    }
+                }
+            }
+        }
+        scalar residual;
+        int iterations;
+        bool success = solver.solve(matrix, rhs, pressure, residual, iterations);
+        if (!success)
+        {
+            std::cout << "WARNING: Pressure solve failed! residual = " << residual << ", iters = " << iterations << std::endl;
+        }
+        std::cout << "solve finished in " << iterations << " iterations" << std::endl;
+        std::memcpy(out, pressure.data(), sizeof(float) * N);
     }
     // solve N x N linear system with a given stencil
     void eigen_pcg_solve(int nx, int ny, int nz, const float *stencil, const int *offsets, int noffsets, const float *b, float *out)

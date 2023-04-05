@@ -998,6 +998,7 @@ impl Simulation {
             log::info!("pressure solve finished in {} iterations", i.unwrap());
         }
 
+        // pcgsolver::bridson_solve(self.A.as_ref().unwrap(), &self.rhs.values, &self.p.values);
         // pcgsolver::eigen_solve(self.A.as_ref().unwrap(), &self.rhs.values, &self.p.values);
 
         self.velocity_update_kernel

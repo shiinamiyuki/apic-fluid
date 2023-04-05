@@ -446,7 +446,7 @@ fn mixed_density(device: Device, res: u32, dt: f32) {
                 color_particles.push(Particle {
                     pos: Float3::new(x, y, 0.0),
                     vel: Float3::new(0.0, 0.0, 0.0),
-                    radius: h * 0.5 * (2.0f32).sqrt(),
+                    radius: h, // make particles a little larger to prevent volume loss due to advection
                     c_x: Float3::new(0.0, 0.0, 0.0),
                     c_y: Float3::new(0.0, 0.0, 0.0),
                     c_z: Float3::new(0.0, 0.0, 0.0),
@@ -457,7 +457,7 @@ fn mixed_density(device: Device, res: u32, dt: f32) {
                 color_particles.push(Particle {
                     pos: Float3::new(x, y, 0.0),
                     vel: Float3::new(0.0, 0.0, 0.0),
-                    radius: h * 0.5 * (2.0f32).sqrt(),
+                    radius: h,
                     c_x: Float3::new(0.0, 0.0, 0.0),
                     c_y: Float3::new(0.0, 0.0, 0.0),
                     c_z: Float3::new(0.0, 0.0, 0.0),
@@ -555,10 +555,10 @@ fn main() {
     let ctx = Context::new(current_exe().unwrap());
     let device = ctx.create_cpu_device().unwrap();
     // vortex_sheet(device, 128, 0.01);
-    // mixed_density(device, 128, 0.01);
-    // dambreak(device, 32, 1.0 / 30.0);
+    // mixed_density(device, 64, 0.01);
+    dambreak(device, 64, 1.0 / 30.0);
     // wave(device, 64, 1.0 / 30.0);
-    splash(device, 40, 1.0 / 30.0);
+    // splash(device, 40, 1.0 / 30.0);
     // boundary(device, 64, 1.0/30.0);
     // stability(device, 32, 1.0/30.0);
 }
