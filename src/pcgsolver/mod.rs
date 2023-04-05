@@ -322,7 +322,7 @@ impl PcgSolver {
             });
 
             let residual = self.abs_max(&self.r);
-            // dbg!(i, residual);
+            // dbg!(i, residual, tol);
             if residual < tol {
                 return Some(i + 1);
             }
@@ -337,6 +337,7 @@ impl PcgSolver {
                 s.submit([self.z.copy_to_buffer_async(&self.s)]).unwrap();
             });
         }
+        // log::error!("failed!");
         None
     }
 }

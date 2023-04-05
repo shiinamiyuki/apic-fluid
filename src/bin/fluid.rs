@@ -70,7 +70,6 @@ fn dambreak(device: Device, res: u32, dt: f32) {
             res: [res, res, res * 2],
             h,
             g: 0.5,
-            rho: 0.1,
             dimension: 3,
             transfer: ParticleTransfer::Apic,
             advect: VelocityIntegration::Euler,
@@ -98,6 +97,7 @@ fn dambreak(device: Device, res: u32, dt: f32) {
                     c_y: Float3::new(0.0, 0.0, 0.0),
                     c_z: Float3::new(0.0, 0.0, 0.0),
                     tag: 0,
+                    density: 1.0,
                 })
             }
         }
@@ -117,7 +117,6 @@ fn wave(device: Device, res: u32, dt: f32) {
             res: [res, res, res * 2],
             h,
             g: 0.5,
-            rho: 1.0,
             dimension: 3,
             transfer: ParticleTransfer::Apic,
             advect: VelocityIntegration::Euler,
@@ -141,6 +140,7 @@ fn wave(device: Device, res: u32, dt: f32) {
                     c_y: Float3::new(0.0, 0.0, 0.0),
                     c_z: Float3::new(0.0, 0.0, 0.0),
                     tag: 0,
+                    density: 1.0,
                 })
             }
         }
@@ -160,7 +160,6 @@ fn boundary(device: Device, res: u32, dt: f32) {
             res: [res, res, res],
             h,
             g: 0.5,
-            rho: 10.0,
             dimension: 3,
             transfer: ParticleTransfer::Apic,
             advect: VelocityIntegration::Euler,
@@ -183,6 +182,7 @@ fn boundary(device: Device, res: u32, dt: f32) {
                     c_y: Float3::new(0.0, 0.0, 0.0),
                     c_z: Float3::new(0.0, 0.0, 0.0),
                     tag: 0,
+                    density: 1.0,
                 })
             }
         }
@@ -202,7 +202,6 @@ fn splash(device: Device, res: u32, dt: f32) {
             res: [res * 2, res * 2, res * 2],
             h,
             g: 9.8,
-            rho: 10.0,
             dimension: 3,
             transfer: ParticleTransfer::Apic,
             advect: VelocityIntegration::Euler,
@@ -225,6 +224,7 @@ fn splash(device: Device, res: u32, dt: f32) {
                     c_y: Float3::new(0.0, 0.0, 0.0),
                     c_z: Float3::new(0.0, 0.0, 0.0),
                     tag: 0,
+                    density: 1.0,
                 })
             }
         }
@@ -244,6 +244,7 @@ fn splash(device: Device, res: u32, dt: f32) {
                     c_y: Float3::new(0.0, 0.0, 0.0),
                     c_z: Float3::new(0.0, 0.0, 0.0),
                     tag: 0,
+                    density: 1.0,
                 })
             }
         }
@@ -263,7 +264,6 @@ fn vortex(device: Device, res: u32, dt: f32) {
             res: [res, res, res],
             h,
             g: 0.0,
-            rho: 10.0,
             dimension: 3,
             transfer: ParticleTransfer::Apic,
             advect: VelocityIntegration::Euler,
@@ -300,6 +300,7 @@ fn vortex(device: Device, res: u32, dt: f32) {
                         c_y: Float3::new(0.0, 0.0, 0.0),
                         c_z: Float3::new(0.0, 0.0, 0.0),
                         tag: 1,
+                        density: 1.0,
                     });
                 } else if map(p, center2) {
                     color_particles.push(Particle {
@@ -310,6 +311,7 @@ fn vortex(device: Device, res: u32, dt: f32) {
                         c_y: Float3::new(0.0, 0.0, 0.0),
                         c_z: Float3::new(0.0, 0.0, 0.0),
                         tag: 2,
+                        density: 1.0,
                     });
                 } else {
                     others.push(Particle {
@@ -320,6 +322,7 @@ fn vortex(device: Device, res: u32, dt: f32) {
                         c_y: Float3::new(0.0, 0.0, 0.0),
                         c_z: Float3::new(0.0, 0.0, 0.0),
                         tag: 0,
+                        density: 1.0,
                     });
                 }
             }
@@ -346,7 +349,6 @@ fn vortex_sheet(device: Device, res: u32, dt: f32) {
             res: [res, res, 1],
             h,
             g: 0.0,
-            rho: 10.0,
             dimension: 2,
             transfer: ParticleTransfer::Apic,
             advect: VelocityIntegration::Euler,
@@ -385,6 +387,7 @@ fn vortex_sheet(device: Device, res: u32, dt: f32) {
                     c_y: Float3::new(0.0, 0.0, 0.0),
                     c_z: Float3::new(0.0, 0.0, 0.0),
                     tag: 1,
+                    density: 1.0,
                 });
             } else {
                 color_particles.push(Particle {
@@ -395,6 +398,71 @@ fn vortex_sheet(device: Device, res: u32, dt: f32) {
                     c_y: Float3::new(0.0, 0.0, 0.0),
                     c_z: Float3::new(0.0, 0.0, 0.0),
                     tag: 2,
+                    density: 1.0,
+                });
+            }
+        }
+    }
+
+    for p in &color_particles {
+        sim.particles_vec.push(*p);
+    }
+    for p in &others {
+        sim.particles_vec.push(*p);
+    }
+    sim.commit();
+    launch_viewer_for_sim_with_tags(&mut sim, color_particles.len());
+}
+fn mixed_density(device: Device, res: u32, dt: f32) {
+    let extent = 1.0;
+    let h = extent / res as f32;
+    let mut sim = Simulation::new(
+        device.clone(),
+        SimulationSettings {
+            dt,
+            max_iterations: 4096,
+            tolerance: 1e-5,
+            res: [res, res, 1],
+            h,
+            g: 1.0,
+            dimension: 2,
+            transfer: ParticleTransfer::Apic,
+            advect: VelocityIntegration::Euler,
+            preconditioner: Preconditioner::DiagJacobi,
+            force_wall_separation: false,
+            seperation_threshold: 0.0,
+        },
+    );
+    let mut color_particles = vec![];
+    let others = vec![];
+    let n = 500;
+
+    for y in 0..n {
+        for x in 0..n {
+            let x = x as f32 / n as f32;
+            let y = y as f32 / n as f32;
+
+            if y < 0.5 {
+                color_particles.push(Particle {
+                    pos: Float3::new(x, y, 0.0),
+                    vel: Float3::new(0.0, 0.0, 0.0),
+                    radius: h * 0.5 * (2.0f32).sqrt(),
+                    c_x: Float3::new(0.0, 0.0, 0.0),
+                    c_y: Float3::new(0.0, 0.0, 0.0),
+                    c_z: Float3::new(0.0, 0.0, 0.0),
+                    tag: 1,
+                    density: 0.1,
+                });
+            } else {
+                color_particles.push(Particle {
+                    pos: Float3::new(x, y, 0.0),
+                    vel: Float3::new(0.0, 0.0, 0.0),
+                    radius: h * 0.5 * (2.0f32).sqrt(),
+                    c_x: Float3::new(0.0, 0.0, 0.0),
+                    c_y: Float3::new(0.0, 0.0, 0.0),
+                    c_z: Float3::new(0.0, 0.0, 0.0),
+                    tag: 2,
+                    density: 1.0,
                 });
             }
         }
@@ -486,10 +554,11 @@ fn main() {
     init_logger();
     let ctx = Context::new(current_exe().unwrap());
     let device = ctx.create_cpu_device().unwrap();
-    // vortex_sheet(device, 128, 0.01);
+    vortex_sheet(device, 128, 0.01);
+    // mixed_density(device, 128, 0.01);
     // dambreak(device, 32, 1.0 / 30.0);
     // wave(device, 64, 1.0 / 30.0);
-    splash(device, 40, 1.0 / 30.0);
+    // splash(device, 40, 1.0 / 30.0);
     // boundary(device, 64, 1.0/30.0);
     // stability(device, 32, 1.0/30.0);
 }
