@@ -10,6 +10,7 @@ pub struct Particle {
     pub pos: Float3,
     pub vel: Float3,
     pub radius: f32,
+    pub density: f32, // assuming all particles have same volume
 
     pub c_x: Float3,
     pub c_y: Float3,
@@ -60,6 +61,10 @@ pub struct Simulation {
     pub u: Grid<f32>,
     pub v: Grid<f32>,
     pub w: Grid<f32>,
+
+    pub density_u: Grid<f32>,
+    pub density_v: Grid<f32>,
+    pub density_w: Grid<f32>,
 
     // fluid mass center at velocity samples
     pub mass_u: Grid<f32>,
@@ -146,6 +151,10 @@ impl Simulation {
         let v = Grid::new(device.clone(), v_res, dimension, [0.0, -0.5 * h, 0.0], h);
         let w = Grid::new(device.clone(), w_res, dimension, [0.0, 0.0, -0.5 * h], h);
 
+        let density_u = Grid::new(device.clone(), u_res, dimension, [-0.5 * h, 0.0, 0.0], h);
+        let density_v = Grid::new(device.clone(), v_res, dimension, [0.0, -0.5 * h, 0.0], h);
+        let density_w = Grid::new(device.clone(), w_res, dimension, [0.0, 0.0, -0.5 * h], h);
+
         let mass_u = Grid::new(device.clone(), u_res, dimension, [-0.5 * h, 0.0, 0.0], h);
         let mass_v = Grid::new(device.clone(), v_res, dimension, [0.0, -0.5 * h, 0.0], h);
         let mass_w = Grid::new(device.clone(), w_res, dimension, [0.0, 0.0, -0.5 * h], h);
@@ -194,6 +203,9 @@ impl Simulation {
             u,
             v,
             w,
+            density_u,
+            density_v,
+            density_w,
             mass_u,
             mass_v,
             mass_w,
@@ -401,6 +413,9 @@ impl Simulation {
                     // let new_pos = new_pos.clamp(lo - 0.5 * self.h(), hi + self.h() * 0.498);
                     // let new_pos = new_pos.clamp(lo, hi);
                     let vel = var!(Float3, pt.vel());
+                    if self.dimension == 2 {
+                        vel.store(vel.load().set_z(0.0.into()));
+                    }
                     for axis in 0..3 {
                         let p_a = var!(f32, new_pos.at(axis));
                         let v_a = var!(f32, vel.load().at(axis));
@@ -715,7 +730,10 @@ impl Simulation {
                 _ => unreachable!(),
             }
         };
+
         let lhs_scale = dt / (h2 * rho2);
+        let rhs_scale = 1.0 / (h * rho);
+
         // only build the system for fluid cells
         if_!(phi_x.cmplt(0.0), {
             let du = var!(f32);
@@ -826,9 +844,9 @@ impl Simulation {
                 }
             }
             let div = if self.dimension == 2 {
-                (-du.load() - dv.load()) / (self.state.rho * self.h())
+                (-du.load() - dv.load()) * rhs_scale
             } else {
-                (-du.load() - dv.load() - dw.load()) / (self.state.rho * self.h())
+                (-du.load() - dv.load() - dw.load()) * rhs_scale
             };
             // cpu_dbg!(make_float3(du.load(), dv.load(), dw.load()));
             self.rhs.set_index(x, div);
@@ -895,7 +913,7 @@ impl Simulation {
         // dbg!(&self.rhs.values.copy_to_vec());
         let i = solver.solve(self.A.as_ref().unwrap(), &self.rhs.values, &self.p.values);
         if i.is_none() {
-            log::warn!("pressure solver failed");
+            panic!("pressure solver failed");
         } else {
             log::info!("pressure solve finished in {} iterations", i.unwrap());
         }

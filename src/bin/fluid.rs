@@ -212,7 +212,7 @@ fn splash(device: Device, res: u32, dt: f32) {
         },
     );
     for z in 0..10 {
-        for y in 0..10 {
+        for y in 0..40 {
             for x in 0..10 {
                 let x = x as f32 * 0.02 + 0.9;
                 let y = y as f32 * 0.02 + 0.5;
@@ -278,8 +278,8 @@ fn vortex(device: Device, res: u32, dt: f32) {
     let center1 = Vec3::new(0.5, 0.5, 0.2);
     let center2 = Vec3::new(0.5, 0.5, 0.8);
     let radius = 0.1;
-    let map = |p, c|{
-        let mut d:Vec3 = p - c;
+    let map = |p, c| {
+        let mut d: Vec3 = p - c;
         d.z *= 6.0;
         d.length() < radius
     };
@@ -301,8 +301,7 @@ fn vortex(device: Device, res: u32, dt: f32) {
                         c_z: Float3::new(0.0, 0.0, 0.0),
                         tag: 1,
                     });
-                }
-                 else if map(p, center2){
+                } else if map(p, center2) {
                     color_particles.push(Particle {
                         pos: Float3::new(x, y, z),
                         vel: Float3::new(0.0, 0.0, -4.0),
@@ -312,8 +311,7 @@ fn vortex(device: Device, res: u32, dt: f32) {
                         c_z: Float3::new(0.0, 0.0, 0.0),
                         tag: 2,
                     });
-                }
-                else {
+                } else {
                     others.push(Particle {
                         pos: Float3::new(x, y, z),
                         vel: Float3::new(0.0, 0.0, 0.0),
@@ -327,6 +325,81 @@ fn vortex(device: Device, res: u32, dt: f32) {
             }
         }
     }
+    for p in &color_particles {
+        sim.particles_vec.push(*p);
+    }
+    for p in &others {
+        sim.particles_vec.push(*p);
+    }
+    sim.commit();
+    launch_viewer_for_sim_with_tags(&mut sim, color_particles.len());
+}
+fn vortex_sheet(device: Device, res: u32, dt: f32) {
+    let extent = 1.0;
+    let h = extent / res as f32;
+    let mut sim = Simulation::new(
+        device.clone(),
+        SimulationSettings {
+            dt,
+            max_iterations: 1024,
+            tolerance: 1e-5,
+            res: [res, res, 1],
+            h,
+            g: 0.0,
+            rho: 10.0,
+            dimension: 2,
+            transfer: ParticleTransfer::Apic,
+            advect: VelocityIntegration::Euler,
+            preconditioner: Preconditioner::DiagJacobi,
+            force_wall_separation: false,
+            seperation_threshold: 0.0,
+        },
+    );
+    sim.log_volume = false;
+    let mut color_particles = vec![];
+    let others = vec![];
+    let center = Vec3::new(0.5, 0.5, 0.0);
+    let map = |p, c| {
+        let d: Vec3 = p - c;
+        d.x * d.y >= 0.0
+    };
+    let n = 500;
+
+    for y in 0..n {
+        for x in 0..n {
+            let x = x as f32 / n as f32;
+            let y = y as f32 / n as f32;
+            let p = Vec3::new(x, y, 0.0);
+            let r = p - Vec3::new(0.5, 0.5, 0.0);
+            let l = Vec3::new(0.0, 0.0, -1.0);
+            let mut v = r.cross(l);
+            if r.length() > 0.25 {
+                v *= 0.0;
+            }
+            if map(p, center) {
+                color_particles.push(Particle {
+                    pos: Float3::new(x, y, 0.0),
+                    vel: v.into(),
+                    radius: h * 0.5 * (2.0f32).sqrt(),
+                    c_x: Float3::new(0.0, 0.0, 0.0),
+                    c_y: Float3::new(0.0, 0.0, 0.0),
+                    c_z: Float3::new(0.0, 0.0, 0.0),
+                    tag: 1,
+                });
+            } else {
+                color_particles.push(Particle {
+                    pos: Float3::new(x, y, 0.0),
+                    vel: v.into(),
+                    radius: h * 0.5 * (2.0f32).sqrt(),
+                    c_x: Float3::new(0.0, 0.0, 0.0),
+                    c_y: Float3::new(0.0, 0.0, 0.0),
+                    c_z: Float3::new(0.0, 0.0, 0.0),
+                    tag: 2,
+                });
+            }
+        }
+    }
+
     for p in &color_particles {
         sim.particles_vec.push(*p);
     }
@@ -413,10 +486,10 @@ fn main() {
     init_logger();
     let ctx = Context::new(current_exe().unwrap());
     let device = ctx.create_cpu_device().unwrap();
-    // vortex(device, 128, 1.0 / 30.0);
-    dambreak(device, 32, 1.0 / 30.0);
+    // vortex_sheet(device, 128, 0.01);
+    // dambreak(device, 32, 1.0 / 30.0);
     // wave(device, 64, 1.0 / 30.0);
-    // splash(device, 40, 1.0 / 30.0);
+    splash(device, 40, 1.0 / 30.0);
     // boundary(device, 64, 1.0/30.0);
     // stability(device, 32, 1.0/30.0);
 }

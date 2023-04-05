@@ -131,7 +131,7 @@ impl PcgSolver {
                                         let mp =
                                             select(diag.cmpeq(0.0), const_(0.0f32), 1.0 / diag);
                                         sum.store(sum.load() + x.read(ip) * mp);
-                                        if_!((c.load() % 2).cmpeq(0), {
+                                        if_!((c.load() % 2).cmpeq(1), {
                                             m.store(m.load() + mp * mp);
                                         });
                                     }
