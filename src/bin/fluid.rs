@@ -554,11 +554,11 @@ fn main() {
     init_logger();
     let ctx = Context::new(current_exe().unwrap());
     let device = ctx.create_cpu_device().unwrap();
-    vortex_sheet(device, 128, 0.01);
+    // vortex_sheet(device, 128, 0.01);
     // mixed_density(device, 128, 0.01);
     // dambreak(device, 32, 1.0 / 30.0);
     // wave(device, 64, 1.0 / 30.0);
-    // splash(device, 40, 1.0 / 30.0);
+    splash(device, 40, 1.0 / 30.0);
     // boundary(device, 64, 1.0/30.0);
     // stability(device, 32, 1.0/30.0);
 }
