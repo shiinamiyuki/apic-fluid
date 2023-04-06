@@ -116,7 +116,7 @@ impl PcgSolver {
                             let diag_i = A.coeff.read(i * noffsets);
                             if_!(diag_i.cmpeq(0.0), {
                                     out.write(i, x.read(i));
-                                }, else{
+                            }, else{
                                 while_!(c.load().cmplt(noffsets), {
                                     let off = A.offsets.read(c.load());
                                     let p = make_uint3(ix, iy, iz).int() + off;
@@ -131,7 +131,7 @@ impl PcgSolver {
                                                     cpu_dbg!(A.coeff.read(ip * noffsets));
                                                 });
                                             }
-                                            let diag = A.coeff.read(ip * noffsets).max(1e-2);
+                                            let diag = A.coeff.read(ip * noffsets);
                                             let mp =
                                                 select(diag.cmpeq(0.0), const_(0.0f32), 1.0 / diag);
                                             // cpu_dbg!(mp);

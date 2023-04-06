@@ -28,10 +28,13 @@ struct Viewer
     Eigen::MatrixXd P;
     Eigen::MatrixXd C;
     Eigen::MatrixXd V;
+    Eigen::MatrixXd mV;
+    Eigen::MatrixXi mF;
     std::vector<float> pos_buf;
     std::vector<float> vel_buf;
     std::vector<int> tags;
     bool updated = false;
+    bool mesh_loaded = false;
     Viewer(int particle_count) : particle_count(particle_count)
     {
         P.resize(particle_count, 3);
@@ -82,6 +85,9 @@ extern "C"
                 viewer->inner.data().set_points(P, C);
                 // viewer->inner.data().set_edges_from_vector_field(P, V, Eigen::RowVector3d(1,0,0));
             }
+            // if(viewer->mesh_loaded) {
+            //     viewer->inner.data().set_mesh(viewer->mV, viewer->mF);
+            // }
             return false;
         };
 
@@ -93,6 +99,34 @@ extern "C"
         viewer->inner.core().is_animating = true;
         viewer->inner.core().background_color = Eigen::Vector4f(0.1, 0.1, 0.1, 1.0);
         viewer->inner.launch();
+    }
+    bool viewer_load_mesh(void *viewer_, const char * path, const float* translate_scale, int *nV, int* nF) {
+        auto viewer = (Viewer *)viewer_;
+        if(!igl::readOBJ(path, viewer->mV, viewer->mF)){
+            return false;
+        }
+        Eigen::RowVector3d translate(translate_scale[0], translate_scale[1],translate_scale[2]);
+        // Eigen::RowVector3d scale(translate_scale[3], translate_scale[4],translate_scale[5]);
+        Eigen::Matrix3d scale;
+        scale << translate_scale[3], 0, 0, 0, translate_scale[4], 0, 0, 0, translate_scale[5];
+        for(int i = 0;i < viewer->mV.rows(); i++) {
+            Eigen::RowVector3d row = viewer->mV.row(i);
+            viewer->mV.row(i) = (scale * row.transpose()).transpose() + translate;
+        }
+        viewer->mesh_loaded = true;
+        *nV = viewer->mV.rows();
+        *nF = viewer->mF.rows();
+        printf("loaded %d vertices %d faces\n", *nV, *nF);
+        viewer->inner.data().set_mesh(viewer->mV, viewer->mF);
+        return true;
+    }
+    const double* viewer_mesh_vertices(void *viewer_) {
+        auto viewer = (Viewer *)viewer_;
+        return viewer->mV.data();
+    }
+    const int* viewer_mesh_faces(void *viewer_) {
+        auto viewer = (Viewer *)viewer_;
+        return viewer->mF.data();
     }
     void viewer_set_tags(void *viewer_, const int *tags)
     {

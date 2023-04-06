@@ -1,3 +1,8 @@
+use luisa::{
+    rtx::{Accel, Mesh},
+    AccelBuildRequest, AccelOption,
+};
+
 use crate::{
     grid::Grid,
     pcgsolver::{PcgSolver, Preconditioner, Stencil},
@@ -69,6 +74,12 @@ pub struct Simulation {
     pub mass_v: Grid<f32>,
     pub mass_w: Grid<f32>,
 
+    // the volume around velocity samples
+    // computed from solid wall biundaries
+    pub static_mass_u: Grid<f32>,
+    pub static_mass_v: Grid<f32>,
+    pub static_mass_w: Grid<f32>,
+
     pub tmp_u: Grid<f32>,
     pub tmp_v: Grid<f32>,
     pub tmp_w: Grid<f32>,
@@ -107,6 +118,7 @@ pub struct Simulation {
     enforce_boundary_kernel: Option<Kernel<()>>,
     velocity_update_kernel: Option<Kernel<(f32,)>>,
     compute_cfl_kernel: Option<Kernel<(Buffer<f32>,)>>,
+    static_fluid_mass_kernel: Option<Kernel<()>>,
     fluid_mass_kernel: Option<Kernel<()>>,
     extrapolate_velocity_kernel: Option<Kernel<()>>,
     extrapolate_density_kernel: Option<Kernel<()>>,
@@ -114,7 +126,8 @@ pub struct Simulation {
     pub device: Device,
     state: State,
     cfl_tmp: Buffer<f32>,
-
+    accel: Option<Accel>,
+    mesh: Option<(Buffer<f32>, Buffer<u32>)>,
     pub log_volume: bool,
 }
 #[derive(Clone, Copy, PartialOrd, PartialEq, Debug)]
@@ -157,6 +170,10 @@ impl Simulation {
         let mass_u = Grid::new(device.clone(), u_res, dimension, [-0.5 * h, 0.0, 0.0], h);
         let mass_v = Grid::new(device.clone(), v_res, dimension, [0.0, -0.5 * h, 0.0], h);
         let mass_w = Grid::new(device.clone(), w_res, dimension, [0.0, 0.0, -0.5 * h], h);
+
+        let static_mass_u = Grid::new(device.clone(), u_res, dimension, [-0.5 * h, 0.0, 0.0], h);
+        let static_mass_v = Grid::new(device.clone(), v_res, dimension, [0.0, -0.5 * h, 0.0], h);
+        let static_mass_w = Grid::new(device.clone(), w_res, dimension, [0.0, 0.0, -0.5 * h], h);
 
         let tmp_u = Grid::new(device.clone(), u_res, dimension, [-0.5 * h, 0.0, 0.0], h);
         let tmp_v = Grid::new(device.clone(), v_res, dimension, [0.0, -0.5 * h, 0.0], h);
@@ -208,6 +225,9 @@ impl Simulation {
             mass_u,
             mass_v,
             mass_w,
+            static_mass_u,
+            static_mass_v,
+            static_mass_w,
             tmp_u,
             tmp_v,
             tmp_w,
@@ -239,9 +259,12 @@ impl Simulation {
             extrapolate_velocity_kernel: None,
             extrapolate_density_kernel: None,
             enforce_boundary_kernel: None,
+            static_fluid_mass_kernel: None,
             cfl_tmp: device.create_buffer(1024).unwrap(),
             device: device.clone(),
             zero_kernel,
+            accel: None,
+            mesh: None,
             state: State {
                 h,
                 max_dt: dt,
@@ -250,6 +273,18 @@ impl Simulation {
                 tolerance: settings.tolerance,
             },
         }
+    }
+    pub fn set_mesh(&mut self, vertices: Buffer<f32>, faces: Buffer<u32>) {
+        let mesh = self
+            .device
+            .create_mesh(vertices.view(..), faces.view(..), AccelOption::default())
+            .unwrap();
+        mesh.build(AccelBuildRequest::ForceBuild);
+        let accel = self.device.create_accel(Default::default()).unwrap();
+        accel.push_mesh(&mesh, Mat4::identity(), u8::MAX, true);
+        accel.build(AccelBuildRequest::ForceBuild);
+        self.accel = Some(accel);
+        self.mesh = Some((vertices, faces));
     }
     pub fn h(&self) -> Expr<f32> {
         // self.control.var().read(0).h()
@@ -512,6 +547,18 @@ impl Simulation {
                 })
                 .unwrap(),
         );
+        self.static_fluid_mass_kernel = Some(
+            self.device
+                .create_kernel_async::<()>(&|| {
+                    self.compute_static_fluid_mass_impl();
+                })
+                .unwrap(),
+        );
+        self.static_fluid_mass_kernel
+            .as_ref()
+            .unwrap()
+            .dispatch(self.res_p1)
+            .unwrap();
     }
     pub fn transfer_particles_to_grid_impl(
         &self,
@@ -660,11 +707,33 @@ impl Simulation {
     //             self.h() * self.h() * self.h() * self.state.rho
     //         }
     // }
+    fn compute_static_fluid_mass_impl(&self) {
+        let x = dispatch_id();
+
+        let map = |u: &Grid<f32>, mass_u: &Grid<f32>, axis: usize| {
+            if_!(!u.oob(x.int()), {
+                let x_a = x.at(axis);
+                let mass = if_!(x_a.cmpeq(0) | x_a.cmpeq(u.res[axis] - 1), {
+                    const_(0.0f32)
+                }, else {
+                    const_(1.0f32)
+                });
+                mass_u.set_index(x, mass);
+                // has_value_u.set_index(x, true.into());
+            });
+        };
+        map(&self.u, &self.static_mass_u, 0);
+        map(&self.v, &self.static_mass_v, 1);
+        if self.dimension == 3 {
+            map(&self.w, &self.static_mass_w, 2);
+        }
+    }
     fn compute_fluid_mass_impl(&self) {
         let x = dispatch_id();
 
         let map = |u: &Grid<f32>,
                    density_u: &Grid<f32>,
+                   static_mass_u: &Grid<f32>,
                    mass_u: &Grid<f32>,
                    has_value_u: &Grid<bool>,
                    axis: usize| {
@@ -683,11 +752,7 @@ impl Simulation {
                     _ => unreachable!(),
                 };
                 let x_a = x.at(axis);
-                let mass = if_!(x_a.cmpeq(0) | x_a.cmpeq(u.res[axis] - 1), {
-                    const_(0.0f32)
-                }, else {
-                    const_(1.0f32)
-                });
+                let mass = static_mass_u.at_index(x);
                 mass_u.set_index(x, mass * unit_mass);
                 if_!(x_a.cmpeq(0) | x_a.cmpeq(u.res[axis] - 1), {
                     has_value_u.set_index(x, false.into());
@@ -700,10 +765,31 @@ impl Simulation {
                 // has_value_u.set_index(x, true.into());
             });
         };
-        map(&self.u, &self.density_u, &self.mass_u, &self.has_value_u, 0);
-        map(&self.v, &self.density_v, &self.mass_v, &self.has_value_v, 1);
+        map(
+            &self.u,
+            &self.density_u,
+            &self.static_mass_u,
+            &self.mass_u,
+            &self.has_value_u,
+            0,
+        );
+        map(
+            &self.v,
+            &self.density_v,
+            &self.static_mass_v,
+            &self.mass_v,
+            &self.has_value_v,
+            1,
+        );
         if self.dimension == 3 {
-            map(&self.w, &self.density_w, &self.mass_w, &self.has_value_w, 2);
+            map(
+                &self.w,
+                &self.density_w,
+                &self.static_mass_w,
+                &self.mass_w,
+                &self.has_value_w,
+                2,
+            );
         }
     }
     fn build_linear_system_impl(&self, dt: Expr<f32>) {
@@ -1120,14 +1206,14 @@ impl Simulation {
             profile("compute_fluid_phi", || {
                 self.compute_fluid_phi();
             });
-            profile("compute_fluid_mass", || {
-                self.compute_fluid_mass();
-            });
-
             profile("apply_ext_forces", || {
                 self.apply_ext_forces(dt);
                 // self.enforce_boundary();
             });
+            profile("compute_fluid_mass", || {
+                self.compute_fluid_mass();
+            });
+
             profile("solve_pressure", || {
                 self.solve_pressure(dt);
             });
