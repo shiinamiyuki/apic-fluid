@@ -6,8 +6,8 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-# luisa_compute = { git= "https://github.com/LuisaGroup/luisa-compute-rs.git"}
-luisa_compute = { path= "../luisa-compute-rs/luisa_compute"}
+luisa_compute = { git= "https://github.com/LuisaGroup/luisa-compute-rs.git", branch="next"}
+# luisa_compute = { path= "../luisa-compute-rs/luisa_compute"}
 image = "*"
 exr = "1.5.2"
 rand = {version = "0.8.5", features = ["std_rng"]}
