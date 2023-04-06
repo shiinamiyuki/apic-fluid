@@ -1,9 +1,11 @@
 #include <Eigen/Core>
 #include <Eigen/Sparse>
 #include <Eigen/IterativeLinearSolvers>
-
+#include <sstream>
 #include <iostream>
 #include <igl/opengl/glfw/Viewer.h>
+#include <igl/png/writePNG.h>
+#include <igl/png/readPNG.h>
 #include "pcg_solver.h"
 
 // Eigen::MatrixXd V;
@@ -30,11 +32,14 @@ struct Viewer
     Eigen::MatrixXd V;
     Eigen::MatrixXd mV;
     Eigen::MatrixXi mF;
+    std::vector<double> mV_data;
+    std::vector<int> mF_data;
     std::vector<float> pos_buf;
     std::vector<float> vel_buf;
     std::vector<int> tags;
     bool updated = false;
     bool mesh_loaded = false;
+    int capture_cnt =0 ;
     Viewer(int particle_count) : particle_count(particle_count)
     {
         P.resize(particle_count, 3);
@@ -50,6 +55,26 @@ extern "C"
     void *create_viewer(size_t particle_count)
     {
         auto viewer = new Viewer(particle_count);
+        viewer->inner.callback_key_pressed = [=](igl::opengl::glfw::Viewer& v, unsigned char key, int modifier)->bool {
+            if (key == '1')
+            {
+                // Allocate temporary buffers
+                Eigen::Matrix<unsigned char,Eigen::Dynamic,Eigen::Dynamic> R(1280,800);
+                Eigen::Matrix<unsigned char,Eigen::Dynamic,Eigen::Dynamic> G(1280,800);
+                Eigen::Matrix<unsigned char,Eigen::Dynamic,Eigen::Dynamic> B(1280,800);
+                Eigen::Matrix<unsigned char,Eigen::Dynamic,Eigen::Dynamic> A(1280,800);
+
+                // Draw the scene in the buffers
+                v.core().draw_buffer(
+                v.data(),false,R,G,B,A);
+                std::ostringstream os;
+                os << "output/out" << viewer->capture_cnt++ << ".png";
+                auto file = os.str();
+                // Save it to a PNG
+                igl::png::writePNG(R,G,B,A, file);
+            }
+            return false;
+        };
         viewer->inner.callback_post_draw = [=](igl::opengl::glfw::Viewer &) -> bool
         {
             if (viewer->updated)
@@ -112,6 +137,16 @@ extern "C"
         for(int i = 0;i < viewer->mV.rows(); i++) {
             Eigen::RowVector3d row = viewer->mV.row(i);
             viewer->mV.row(i) = (scale * row.transpose()).transpose() + translate;
+            row = viewer->mV.row(i);
+            viewer->mV_data.push_back(row[0]);
+            viewer->mV_data.push_back(row[1]);
+            viewer->mV_data.push_back(row[2]);
+        }
+        for(int i = 0;i < viewer->mF.rows(); i++) {
+            Eigen::RowVector3i row = viewer->mF.row(i);
+            viewer->mF_data.push_back(row[0]);
+            viewer->mF_data.push_back(row[1]);
+            viewer->mF_data.push_back(row[2]);
         }
         viewer->mesh_loaded = true;
         *nV = viewer->mV.rows();
@@ -122,11 +157,11 @@ extern "C"
     }
     const double* viewer_mesh_vertices(void *viewer_) {
         auto viewer = (Viewer *)viewer_;
-        return viewer->mV.data();
+        return viewer->mV_data.data();
     }
     const int* viewer_mesh_faces(void *viewer_) {
         auto viewer = (Viewer *)viewer_;
-        return viewer->mF.data();
+        return viewer->mF_data.data();
     }
     void viewer_set_tags(void *viewer_, const int *tags)
     {

@@ -127,7 +127,7 @@ pub struct Simulation {
     state: State,
     cfl_tmp: Buffer<f32>,
     accel: Option<Accel>,
-    mesh: Option<(Buffer<f32>, Buffer<u32>)>,
+    mesh: Option<(Buffer<Float3>, Buffer<Uint3>)>,
     pub log_volume: bool,
 }
 #[derive(Clone, Copy, PartialOrd, PartialEq, Debug)]
@@ -274,7 +274,7 @@ impl Simulation {
             },
         }
     }
-    pub fn set_mesh(&mut self, vertices: Buffer<f32>, faces: Buffer<u32>) {
+    pub fn set_mesh(&mut self, vertices: Buffer<Float3>, faces: Buffer<Uint3>) {
         let mesh = self
             .device
             .create_mesh(vertices.view(..), faces.view(..), AccelOption::default())
@@ -285,6 +285,32 @@ impl Simulation {
         accel.build(AccelBuildRequest::ForceBuild);
         self.accel = Some(accel);
         self.mesh = Some((vertices, faces));
+    }
+    fn signed_distance(&self, ray: Expr<RtxRay>) -> Expr<f32> {
+        let accel = self.accel.as_ref().unwrap();
+        let accel = accel.var();
+        let hit = accel.trace_closest(ray);
+        if_!(hit.valid(), {
+            let prim_id = hit.prim_id();
+            let u = hit.u();
+            let v = hit.v();
+            let (vertices, faces) = self.mesh.as_ref().unwrap();
+            let vertices = vertices.var();
+            let faces = faces.var();
+            let f = faces.read(prim_id);
+            let v0 = vertices.read(f.x());
+            let v1 = vertices.read(f.y());
+            let v2 = vertices.read(f.z());
+            // let n = (v0 - v1).cross(v0 - v2).normalize();
+            let n = (v2 - v0).cross(v1 - v0).normalize();
+            let p = (1.0 - u - v) * v0 + u * v1 + v * v2;
+            let dist = (p - make_float3(ray.orig_x(), ray.orig_y(), ray.orig_z())).length();
+            let d = make_float3(ray.dir_x(), ray.dir_y(), ray.dir_z());
+            let inside = d.dot(n).cmplt(0.0);
+            dist * select(inside, const_(-1.0f32), const_(1.0f32))
+        }, else {
+            const_(1e5f32)
+        })
     }
     pub fn h(&self) -> Expr<f32> {
         // self.control.var().read(0).h()
@@ -716,7 +742,23 @@ impl Simulation {
                 let mass = if_!(x_a.cmpeq(0) | x_a.cmpeq(u.res[axis] - 1), {
                     const_(0.0f32)
                 }, else {
-                    const_(1.0f32)
+                    if self.accel.is_some() {
+                        let ro = u.pos_i_to_f(x.int()) + make_float3(0.0, 0.0, 0.0);
+                        let rd = match axis {
+                            0=>make_float3(1.0,0.0,0.0),
+                            1=>make_float3(0.0,1.0,0.0),
+                            2=>make_float3(0.0,0.0,1.0),
+                            _=>unreachable!()
+                        };
+                        let ray0 = RtxRayExpr::new(ro.x(), ro.y(), ro.z(), 0.0, rd.x(), rd.y(), rd.z(), 1e5);
+                        let sd0 = self.signed_distance(ray0).clamp(0.0, 0.5 * self.h());
+
+                        let ray1 = RtxRayExpr::new(ro.x(), ro.y(), ro.z(), 0.0, -rd.x(), -rd.y(), -rd.z(), 1e5);
+                        let sd1 = self.signed_distance(ray1).clamp(0.0, 0.5 * self.h());
+                        (sd0 + sd1) / self.h()
+                    }else {
+                        const_(1.0f32)
+                    }
                 });
                 mass_u.set_index(x, mass);
                 // has_value_u.set_index(x, true.into());
