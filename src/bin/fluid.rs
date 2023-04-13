@@ -39,9 +39,9 @@ fn test_solve() {
     );
     let mut buf = vec![];
     for i in 0..(n * n * n) {
-        buf.push(6.0);
+        buf.push(6.0* 0.001);
         for _ in 0..6 {
-            buf.push(-1.0);
+            buf.push(-1.0* 0.001);
         }
     }
     stencil.coeff.copy_from(&buf);
@@ -61,6 +61,7 @@ fn test_solve() {
     println!("{:?}", &eigen_solution[..16]);
 }
 fn dambreak(device: Device, res: u32, dt: f32) {
+    init_logger();
     let extent = 2.0;
     let h = extent / res as f32;
     let mut sim = Simulation::new(
@@ -78,6 +79,12 @@ fn dambreak(device: Device, res: u32, dt: f32) {
             preconditioner: Preconditioner::DiagJacobi,
             force_wall_separation: true,
             seperation_threshold: 0.0,
+            reconstruction: Some(Reconstruction {
+                save_every: 10,
+                res: [32, 32, 32 * 2],
+                h: extent / 32.0,
+                r: 0.02,
+            }),
         },
     );
     let mut rng = StdRng::seed_from_u64(0);
@@ -125,6 +132,7 @@ fn dambreak_with_ramp(device: Device, res: u32, dt: f32) {
             preconditioner: Preconditioner::DiagJacobi,
             force_wall_separation: true,
             seperation_threshold: 0.0,
+            reconstruction: None,
         },
     );
     let mut rng = StdRng::seed_from_u64(0);
@@ -229,6 +237,7 @@ fn dambreak_with_ramp(device: Device, res: u32, dt: f32) {
     }
 }
 fn dambreak_with_bunny(device: Device, res: u32, dt: f32) {
+    init_logger();
     let extent = 2.0;
     let h = extent / res as f32;
     let mut sim = Simulation::new(
@@ -246,6 +255,7 @@ fn dambreak_with_bunny(device: Device, res: u32, dt: f32) {
             preconditioner: Preconditioner::DiagJacobi,
             force_wall_separation: true,
             seperation_threshold: 0.0,
+            reconstruction: None,
         },
     );
     let mut rng = StdRng::seed_from_u64(0);
@@ -367,6 +377,7 @@ fn wave(device: Device, res: u32, dt: f32) {
             preconditioner: Preconditioner::DiagJacobi,
             force_wall_separation: false,
             seperation_threshold: 0.1,
+            reconstruction: None,
         },
     );
     for z in 0..200 {
@@ -410,6 +421,12 @@ fn boundary(device: Device, res: u32, dt: f32) {
             preconditioner: Preconditioner::DiagJacobi,
             force_wall_separation: true,
             seperation_threshold: 0.1,
+            reconstruction: Some(Reconstruction {
+                save_every: 1,
+                res: [32, 32, 32],
+                h: extent / 32.0,
+                r: 0.01,
+            }),
         },
     );
     for z in 0..200 {
@@ -435,6 +452,7 @@ fn boundary(device: Device, res: u32, dt: f32) {
     launch_viewer_for_sim(&mut sim);
 }
 fn splash(device: Device, res: u32, dt: f32) {
+    init_logger();
     let extent = 1.0;
     let h = extent / res as f32;
     let mut sim = Simulation::new(
@@ -452,14 +470,20 @@ fn splash(device: Device, res: u32, dt: f32) {
             preconditioner: Preconditioner::DiagJacobi,
             force_wall_separation: false,
             seperation_threshold: 0.0,
+            reconstruction: Some(Reconstruction {
+                save_every: 4,
+                res: [50, 50, 50],
+                h: 2.0 * extent / 50.0,
+                r: 0.03,
+            }),
         },
     );
-    for z in 0..10 {
-        for y in 0..40 {
-            for x in 0..10 {
-                let x = x as f32 * 0.02 + 0.9;
-                let y = y as f32 * 0.02 + 0.5;
-                let z = z as f32 * 0.02 + 0.9;
+    for z in 0..20 {
+        for y in 0..80 {
+            for x in 0..20 {
+                let x = x as f32 * 0.01 + 0.9;
+                let y = y as f32 * 0.01 + 0.7;
+                let z = z as f32 * 0.01 + 0.9;
                 sim.particles_vec.push(Particle {
                     pos: Float3::new(x, y, z),
                     vel: Float3::new(0.0, -5.0, 0.0),
@@ -474,12 +498,12 @@ fn splash(device: Device, res: u32, dt: f32) {
         }
     }
 
-    for z in 0..100 {
-        for y in 0..20 {
-            for x in 0..100 {
-                let x = x as f32 * 0.02;
-                let y = y as f32 * 0.02;
-                let z = z as f32 * 0.02;
+    for z in 0..200 {
+        for y in 0..40 {
+            for x in 0..200 {
+                let x = x as f32 * 0.01;
+                let y = y as f32 * 0.01;
+                let z = z as f32 * 0.01;
                 sim.particles_vec.push(Particle {
                     pos: Float3::new(x, y, z),
                     vel: Float3::new(0.0, 0.0, 0.0),
@@ -514,6 +538,7 @@ fn ink_drop(device: Device, res: u32, dt: f32) {
             preconditioner: Preconditioner::DiagJacobi,
             force_wall_separation: false,
             seperation_threshold: 0.0,
+            reconstruction: None,
         },
     );
     sim.log_volume = false;
@@ -587,6 +612,7 @@ fn vortex(device: Device, res: u32, dt: f32) {
             preconditioner: Preconditioner::DiagJacobi,
             force_wall_separation: false,
             seperation_threshold: 0.0,
+            reconstruction: None,
         },
     );
     sim.log_volume = false;
@@ -672,6 +698,7 @@ fn vortex_sheet(device: Device, res: u32, dt: f32) {
             preconditioner: Preconditioner::DiagJacobi,
             force_wall_separation: false,
             seperation_threshold: 0.0,
+            reconstruction: None,
         },
     );
     sim.log_volume = false;
@@ -731,13 +758,14 @@ fn vortex_sheet(device: Device, res: u32, dt: f32) {
     launch_viewer_for_sim_with_tags(&mut sim, color_particles.len());
 }
 fn mixed_density(device: Device, res: u32, dt: f32) {
+    init_logger();
     let extent = 1.0;
     let h = extent / res as f32;
     let mut sim = Simulation::new(
         device.clone(),
         SimulationSettings {
             dt,
-            max_iterations: 4096,
+            max_iterations: 40960,
             tolerance: 1e-5,
             res: [res, res, 1],
             h,
@@ -745,9 +773,10 @@ fn mixed_density(device: Device, res: u32, dt: f32) {
             dimension: 2,
             transfer: ParticleTransfer::Apic,
             advect: VelocityIntegration::Euler,
-            preconditioner: Preconditioner::DiagJacobi,
+            preconditioner: Preconditioner::IncompletePoisson,
             force_wall_separation: false,
             seperation_threshold: 0.0,
+            reconstruction: None,
         },
     );
     let mut color_particles = vec![];
@@ -872,14 +901,14 @@ fn main() {
     let ctx = Context::new(current_exe().unwrap());
     let device = ctx.create_cpu_device().unwrap();
     // vortex(device, 128, 1.0 / 30.0);
-    // vortex_sheet(device, 128, 0.01);
-    // mixed_density(device, 128, 0.01);
-    // dambreak(device, 40, 1.0 / 30.0);
-    // dambreak_with_bunny(device, 40, 1.0 / 30.0);
-    dambreak_with_ramp(device, 40, 1.0 / 30.0);
+    // vortex_sheet(device, 128, 0.003);
+    // mixed_density(device, 256, 0.01);
+    // dambreak(device, 32, 1.0 / 30.0);
+    dambreak_with_bunny(device, 40, 1.0 / 60.0);
+    // dambreak_with_ramp(device, 40, 1.0 / 60.0);
     // wave(device, 64, 1.0 / 30.0);
     // ink_drop(device, 64, 1.0 / 30.0);
-    // splash(device, 40, 1.0 / 30.0);
-    // boundary(device, 64, 1.0/30.0);
+    // splash(device, 40, 1.0 / 60.0);
+    // boundary(device, 64, 1.0 / 30.0);
     // stability(device, 32, 1.0/30.0);
 }

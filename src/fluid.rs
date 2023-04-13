@@ -6,6 +6,7 @@ use luisa::{
 use crate::{
     grid::Grid,
     pcgsolver::{PcgSolver, Preconditioner, Stencil},
+    reconstruction::AnisotropicDiffusion,
     *,
 };
 
@@ -43,6 +44,13 @@ pub struct State {
     pub tolerance: f32,
 }
 #[derive(Clone, Copy)]
+pub struct Reconstruction {
+    pub save_every: usize,
+    pub res: [u32; 3],
+    pub h: f32,
+    pub r: f32,
+}
+#[derive(Clone, Copy)]
 pub struct SimulationSettings {
     pub dt: f32,
     pub max_iterations: u32,
@@ -56,11 +64,12 @@ pub struct SimulationSettings {
     pub seperation_threshold: f32,
     pub advect: VelocityIntegration,
     pub preconditioner: Preconditioner,
+    pub reconstruction: Option<Reconstruction>,
 }
 pub struct Simulation {
     pub settings: SimulationSettings,
     res_p1: [u32; 3],
-
+    frame: usize,
     pub u: Grid<f32>,
     pub v: Grid<f32>,
     pub w: Grid<f32>,
@@ -128,6 +137,7 @@ pub struct Simulation {
     cfl_tmp: Buffer<f32>,
     accel: Option<Accel>,
     mesh: Option<(Buffer<Float3>, Buffer<Uint3>)>,
+    reconstruction: Option<AnisotropicDiffusion>,
     pub log_volume: bool,
 }
 #[derive(Clone, Copy, PartialOrd, PartialEq, Debug)]
@@ -209,6 +219,7 @@ impl Simulation {
             })
             .unwrap();
         Self {
+            reconstruction: None,
             log_volume: true,
             res_p1: [
                 res[0] + 1,
@@ -272,6 +283,7 @@ impl Simulation {
                 max_iterations: settings.max_iterations,
                 tolerance: settings.tolerance,
             },
+            frame: 0,
         }
     }
     pub fn set_mesh(&mut self, vertices: Buffer<Float3>, faces: Buffer<Uint3>) {
@@ -352,12 +364,25 @@ impl Simulation {
     }
 
     pub fn commit(&mut self) {
+        self.frame = 0;
         self.particles = Some(
             self.device
                 .create_buffer_from_slice(&self.particles_vec)
                 .unwrap(),
         );
         self.p.init_particle_list(self.particles_vec.len());
+        if self.dimension == 3 {
+            // let res = self.p.res;
+            if let Some(r) = self.settings.reconstruction {
+                self.reconstruction = Some(AnisotropicDiffusion::new(
+                    self.device.clone(),
+                    r.res,
+                    r.h,
+                    r.r,
+                    self.particles_vec.len(),
+                ));
+            }
+        }
         let p_res = self.p.res;
         self.solver = Some(PcgSolver::new(
             self.device.clone(),
@@ -619,7 +644,7 @@ impl Simulation {
                 let w_p = trilinear_weight(offset, self.dimension);
                 // cpu_dbg!(w_p);
                 assert(w_p.cmpge(0.0) & w_p.cmple(1.0));
-                let m_p = pt.density();
+                let m_p = pt.density(); // assume particles have same volume
                 let v_pa = match axis {
                     0 => v_p.x(),
                     1 => v_p.y(),
@@ -725,14 +750,6 @@ impl Simulation {
 
         particles.write(pt_idx, pt.load());
     }
-    // fn unit_mass(&self) -> Expr<f32> {
-    //     self.state.rho
-    //         * if self.dimension == 2 {
-    //             self.h() * self.h() * self.state.rho
-    //         } else {
-    //             self.h() * self.h() * self.h() * self.state.rho
-    //         }
-    // }
     fn compute_static_fluid_mass_impl(&self) {
         let x = dispatch_id();
 
@@ -928,7 +945,13 @@ impl Simulation {
                     let mass = get_fluid_mass(offset_idx);
                     let rho = get_fluid_rho(offset_idx);
                     let rho2 = rho * rho;
-                    let lhs_scale = dt / (h2 * rho2);
+                    // let lhs_scale = dt / (h2 * rho2);
+                    let lhs_scale = 1.0 / (h2 * rho2)
+                        * if self.dimension == 3 {
+                            1.0 / h
+                        } else {
+                            const_(1.0f32)
+                        };
 
                     if_!(phi_y.cmpgt(0.0), {
                         assert(rho.cmpgt(0.0));
@@ -944,57 +967,6 @@ impl Simulation {
                         A_coeff.write(i * A.offsets.len() as u32 + offset_idx, -mass * lhs_scale);
                     });
                     //
-                }, else {
-                    // if velocity is leaving the boundary
-                    // then treat the boundary as free surface
-
-                    // if self.settings.force_wall_separation {
-                    //     let is_free_surface = var!(bool, false);
-                    //     let thr = self.settings.seperation_threshold * dt;
-                    //     match offset_idx {
-                    //         // 1=>{
-                    //         //     is_free_surface.store(x.x().cmpeq(self.p.res[0]-1) & self.u.at_index(x+make_uint3(1,0,0)).cmplt(-thr));
-                    //         //     if_!(is_free_surface.load(), {
-                    //         //         du.store(du.load() + self.unit_mass() * self.u.at_index(x+make_uint3(1,0,0)));
-                    //         //     });
-                    //         // }
-                    //         // 2=>{
-                    //         //     is_free_surface.store(x.x().cmpeq(0) & self.u.at_index(x).cmpgt(thr));
-                    //         //     if_!(is_free_surface.load(), {
-                    //         //         du.store(du.load() - self.unit_mass() * self.u.at_index(x));
-                    //         //     });
-                    //         // }
-                    //         3=>{
-                    //             is_free_surface.store(x.y().cmpeq(self.p.res[1]-1) & self.v.at_index(x+make_uint3(0,1,0)).cmplt(-thr));
-                    //             if_!(is_free_surface.load(), {
-                    //                 dv.store(dv.load() + self.unit_mass() * self.v.at_index(x+make_uint3(0,1,0)));
-                    //             });
-                    //         }
-                    //         // 4=>{
-                    //         //     is_free_surface.store(x.y().cmpeq(0) & self.v.at_index(x).cmpgt(thr));
-                    //         //     if_!(is_free_surface.load(), {
-                    //         //         dv.store(dv.load() - self.unit_mass() * self.v.at_index(x));
-                    //         //     });
-                    //         // }
-                    //         // 5=>{
-                    //         //     is_free_surface.store(x.z().cmpeq(self.p.res[2]-1) & self.w.at_index(x+make_uint3(0,0,1)).cmplt(-thr));
-                    //         //     if_!(is_free_surface.load(), {
-                    //         //         dw.store(dw.load() + self.unit_mass() * self.w.at_index(x+make_uint3(0,0,1)));
-                    //         //     });
-                    //         // }
-                    //         // 6=>{
-                    //         //     is_free_surface.store(x.z().cmpeq(0) & self.w.at_index(x).cmpgt(thr));
-                    //         //     if_!(is_free_surface.load(), {
-                    //         //         dw.store(dw.load() - self.unit_mass() * self.w.at_index(x));
-                    //         //     });
-                    //         // }
-                    //         _=>{}
-                    //     }
-                    //     if_!(is_free_surface.load(), {
-                    //         diag.store(diag.load() + self.unit_mass() / 0.5 * lhs_scale);
-                    //         // A_coeff.write(i * A.offsets.len() as u32 + offset_idx, 0.0);
-                    //     });
-                    // }
                 });
             };
             if self.dimension == 2 {
@@ -1015,7 +987,13 @@ impl Simulation {
                     |u: &Grid<f32>, density_u: &Grid<f32>, mass_u: &Grid<f32>, x: Expr<Uint3>| {
                         let rho = density_u.at_index(x);
                         assert(rho.cmpgt(0.0));
-                        let rhs_scale = 1.0 / (h * rho);
+                        // let rhs_scale = 1.0 / (h * rho);
+                        let rhs_scale = 1.0 / (h * dt * rho)
+                            * if self.dimension == 3 {
+                                1.0 / h
+                            } else {
+                                const_(1.0f32)
+                            };
                         u.at_index(x) * mass_u.at_index(x) * rhs_scale
                     };
                 du.store(
@@ -1121,7 +1099,7 @@ impl Simulation {
         // dbg!(&self.rhs.values.copy_to_vec());
         let i = solver.solve(self.A.as_ref().unwrap(), &self.rhs.values, &self.p.values);
         if i.is_none() {
-            panic!("pressure solver failed");
+            log::warn!("pressure solver failed");
         } else {
             log::info!("pressure solve finished in {} iterations", i.unwrap());
         }
@@ -1233,7 +1211,7 @@ impl Simulation {
                 self.compute_cfl();
             });
 
-            let dt = self.state.dt;
+            let dt = self.state.dt.min(self.state.max_dt - cur);
             log::info!("dt: {}", dt);
             profile("advect_particle", || {
                 self.advect_particle(dt);
@@ -1267,6 +1245,16 @@ impl Simulation {
                 self.transfer_grid_to_particles();
             });
             cur += dt;
+        }
+        self.frame += 1;
+        if let Some(r) = self.settings.reconstruction {
+            if let Some(recon) = &self.reconstruction {
+                if self.frame % r.save_every == 0 {
+                    profile("reconstruction", || {
+                        recon.save_obj(self.particles.as_ref().unwrap(), self.frame, "mesh");
+                    });
+                }
+            }
         }
     }
     // solve for (1 - theta) * cur_phi + theta * neighbor_phi = 0

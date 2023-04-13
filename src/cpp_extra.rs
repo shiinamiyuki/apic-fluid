@@ -10,10 +10,20 @@ extern "C" {
     pub fn viewer_load_mesh(
         viewer: *mut c_void,
         path: *const c_char,
-        translate_scale:*const f32,
+        translate_scale: *const f32,
         nV: *mut i32,
         nF: *mut i32,
     ) -> bool;
     pub fn viewer_mesh_vertices(viewer: *mut c_void) -> *const f64;
     pub fn viewer_mesh_faces(viewer: *mut c_void) -> *const i32;
+    pub fn compute_G(A: *const f32, N: u32, h: f32, G: *mut f32, G_norm: &mut f32);
+    pub fn save_reconstructed_mesh(
+        nx: u32,
+        ny: u32,
+        nz: u32,
+        S: *const f32,
+        GV: *const f32,
+        iso: f32,
+        path: *const c_char,
+    );
 }

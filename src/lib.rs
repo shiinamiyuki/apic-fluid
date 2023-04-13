@@ -2,11 +2,12 @@
 pub use luisa::prelude::*;
 pub use luisa::{derive::*, lang::*, macros::*, math::*, Buffer, Context, Device, Kernel};
 pub use luisa_compute as luisa;
+pub use luisa::glam;
 pub mod cpp_extra;
 pub mod fluid;
 pub mod grid;
 pub mod pcgsolver;
-
+pub mod reconstruction;
 pub fn trilinear_weight(off: Expr<Float3>, dim: usize) -> Expr<f32> {
     let one_minus_off = 1.0 - off.abs();
     let one_minus_off = one_minus_off.max(0.0);
@@ -21,10 +22,15 @@ pub fn grad_trilinear_weight(off: Expr<Float3>, dim: usize) -> Expr<Float3> {
     let sgn = Float3Expr::select(
         off.cmpgt(0.0),
         make_float3(1.0, 1.0, 1.0),
-        -make_float3(1.0, 1.0, 1.0),
+        Float3Expr::select(
+            off.cmpeq(0.0),
+            make_float3(0.0, 0.0, 0.0),
+            -make_float3(1.0, 1.0, 1.0),
+        ),
     );
     let one_minus_off = 1.0 - off.abs();
-
+    let sgn = Float3Expr::select(one_minus_off.cmplt(0.0), Float3Expr::zero(), sgn);
+    let one_minus_off = one_minus_off.max(0.0);
     match dim {
         2 => {
             let dx = -sgn.x() * one_minus_off.y();

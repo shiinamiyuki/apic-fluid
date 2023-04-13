@@ -134,7 +134,7 @@ impl PcgSolver {
                                             let diag = A.coeff.read(ip * noffsets);
                                             let mp =
                                                 select(diag.cmpeq(0.0), const_(0.0f32), 1.0 / diag);
-                                            // cpu_dbg!(mp);
+                                            // cpu_dbg!(diag);
                                             sum.store(sum.load() + x.read(ip) * mp);
                                             if_!((c.load() % 2).cmpeq(0), {
                                                 m.store(m.load() + mp * mp);

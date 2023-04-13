@@ -175,6 +175,12 @@ impl<T: Value> Grid<T> {
     pub fn pos_i_to_f(&self, p: Expr<Int3>) -> Expr<Float3> {
         p.float() * self.dx + make_float3(self.origin[0], self.origin[1], self.origin[2])
     }
+    pub fn cell_center(&self, p: Expr<Int3>) -> Expr<Float3> {
+        self.pos_i_to_f(p) + self.dx * 0.5
+    }
+    pub fn get_cell(&self, p: Expr<Float3>) -> Expr<Int3> {
+        self.pos_f_to_i(p + self.dx * 0.5)
+    }
     pub fn add_to_cell(&self, p: Expr<Float3>, i: Expr<u32>) {
         let ip = self.pos_f_to_i(p + self.dx * 0.5);
         // let ip = self.clamp(ip);
