@@ -1,7 +1,11 @@
+use std::io::Write;
+
 use luisa::{
+    glam::Vec3,
     rtx::{Accel, Mesh},
     AccelBuildRequest, AccelOption,
 };
+use serde::{Deserialize, Serialize};
 
 use crate::{
     grid::Grid,
@@ -10,6 +14,23 @@ use crate::{
     *,
 };
 
+#[derive(Clone, Copy, Default, Debug, Serialize, Deserialize)]
+pub struct ParticleData {
+    pub pos: [f32; 3],
+    pub vel: [f32; 3],
+    pub tag: u32,
+}
+
+#[derive(Clone, Default, Debug, Serialize, Deserialize)]
+pub struct Replay {
+    pub dt:f32,
+    pub frames: Vec<Vec<ParticleData>>,
+}
+impl Replay {
+    pub fn new(dt:f32,) -> Self {
+        Self { dt, frames: Vec::new() }
+    }
+}
 #[derive(Clone, Copy, Value, Default, Debug)]
 #[repr(C)]
 pub struct Particle {
@@ -50,7 +71,7 @@ pub struct Reconstruction {
     pub h: f32,
     pub r: f32,
 }
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub struct SimulationSettings {
     pub dt: f32,
     pub max_iterations: u32,
@@ -65,6 +86,7 @@ pub struct SimulationSettings {
     pub advect: VelocityIntegration,
     pub preconditioner: Preconditioner,
     pub reconstruction: Option<Reconstruction>,
+    pub name: String,
 }
 pub struct Simulation {
     pub settings: SimulationSettings,
@@ -138,6 +160,7 @@ pub struct Simulation {
     accel: Option<Accel>,
     mesh: Option<(Buffer<Float3>, Buffer<Uint3>)>,
     reconstruction: Option<AnisotropicDiffusion>,
+    replay: Option<Replay>,
     pub log_volume: bool,
 }
 #[derive(Clone, Copy, PartialOrd, PartialEq, Debug)]
@@ -226,7 +249,7 @@ impl Simulation {
                 res[1] + 1,
                 if dimension == 3 { res[2] + 1 } else { 1 },
             ],
-            settings,
+            settings: settings.clone(),
             u,
             v,
             w,
@@ -276,6 +299,7 @@ impl Simulation {
             zero_kernel,
             accel: None,
             mesh: None,
+            replay: None,
             state: State {
                 h,
                 max_dt: dt,
@@ -285,6 +309,9 @@ impl Simulation {
             },
             frame: 0,
         }
+    }
+    pub fn enable_recording(&mut self) {
+        self.replay = Some(Replay::new(self.settings.dt));
     }
     pub fn set_mesh(&mut self, vertices: Buffer<Float3>, faces: Buffer<Uint3>) {
         let mesh = self
@@ -1255,6 +1282,31 @@ impl Simulation {
                     });
                 }
             }
+        }
+        if let Some(rp) = &mut self.replay {
+            let data = self
+                .particles
+                .as_ref()
+                .unwrap()
+                .copy_to_vec()
+                .into_iter()
+                .map(|p| ParticleData {
+                    pos: [p.pos.x, p.pos.y, p.pos.z],
+                    vel: [p.vel.x, p.vel.y, p.vel.z],
+                    tag: p.tag,
+                })
+                .collect();
+            rp.frames.push(data);
+        }
+    }
+    pub fn save_replay(&self, path: &str) {
+        if let Some(rp) = &self.replay {
+            let data = bson::to_vec(&rp).unwrap();
+            let path = format!("{}/{}", path, self.settings.name);
+            log::info!("saving replay to {}", path);
+            let mut file =
+                std::fs::File::create(&path).unwrap();
+            file.write_all(&data).unwrap();
         }
     }
     // solve for (1 - theta) * cur_phi + theta * neighbor_phi = 0

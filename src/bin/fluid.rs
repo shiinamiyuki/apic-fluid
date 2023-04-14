@@ -39,9 +39,9 @@ fn test_solve() {
     );
     let mut buf = vec![];
     for i in 0..(n * n * n) {
-        buf.push(6.0* 0.001);
+        buf.push(6.0 * 0.001);
         for _ in 0..6 {
-            buf.push(-1.0* 0.001);
+            buf.push(-1.0 * 0.001);
         }
     }
     stencil.coeff.copy_from(&buf);
@@ -79,14 +79,17 @@ fn dambreak(device: Device, res: u32, dt: f32) {
             preconditioner: Preconditioner::DiagJacobi,
             force_wall_separation: true,
             seperation_threshold: 0.0,
-            reconstruction: Some(Reconstruction {
-                save_every: 10,
-                res: [32, 32, 32 * 2],
-                h: extent / 32.0,
-                r: 0.02,
-            }),
+            // reconstruction: Some(Reconstruction {
+            //     save_every: 10,
+            //     res: [32, 32, 32 * 2],
+            //     h: extent / 32.0,
+            //     r: 0.01,
+            // }),
+            reconstruction: None,
+            name: "dambreak".to_string(),
         },
     );
+    sim.enable_recording();
     let mut rng = StdRng::seed_from_u64(0);
     for z in 0..60 {
         for y in 0..60 {
@@ -95,9 +98,9 @@ fn dambreak(device: Device, res: u32, dt: f32) {
                 let y = y as f32 * 0.02;
                 let z = z as f32 * 0.02;
 
-                let x = x + (rng.gen::<f32>() - 0.5) * 0.01;
-                let y = y + (rng.gen::<f32>() - 0.5) * 0.01;
-                let z = z + (rng.gen::<f32>() - 0.5) * 0.01;
+                let x = x + 2.0 * (rng.gen::<f32>() - 0.5) * 0.01;
+                let y = y; // + 2.0 * (rng.gen::<f32>() - 0.5) * 0.01;
+                let z = z + 2.0 * (rng.gen::<f32>() - 0.5) * 0.01;
                 sim.particles_vec.push(Particle {
                     pos: Float3::new(x, y, z),
                     vel: Float3::new(0.0, 0.0, 0.0),
@@ -133,6 +136,7 @@ fn dambreak_with_ramp(device: Device, res: u32, dt: f32) {
             force_wall_separation: true,
             seperation_threshold: 0.0,
             reconstruction: None,
+            name: "dambreak_with_ramp".to_string(),
         },
     );
     let mut rng = StdRng::seed_from_u64(0);
@@ -256,6 +260,7 @@ fn dambreak_with_bunny(device: Device, res: u32, dt: f32) {
             force_wall_separation: true,
             seperation_threshold: 0.0,
             reconstruction: None,
+            name: "dambreak_with_bunny".to_string(),
         },
     );
     let mut rng = StdRng::seed_from_u64(0);
@@ -355,6 +360,7 @@ fn dambreak_with_bunny(device: Device, res: u32, dt: f32) {
         }
         sim.step();
     }
+    sim.save_replay("replays/");
     unsafe {
         cpp_extra::destroy_viewer(viewer);
     }
@@ -378,6 +384,7 @@ fn wave(device: Device, res: u32, dt: f32) {
             force_wall_separation: false,
             seperation_threshold: 0.1,
             reconstruction: None,
+            name: "wave".to_string(),
         },
     );
     for z in 0..200 {
@@ -427,6 +434,7 @@ fn boundary(device: Device, res: u32, dt: f32) {
                 h: extent / 32.0,
                 r: 0.01,
             }),
+            name: "boundary".to_string(),
         },
     );
     for z in 0..200 {
@@ -476,6 +484,7 @@ fn splash(device: Device, res: u32, dt: f32) {
                 h: 2.0 * extent / 50.0,
                 r: 0.03,
             }),
+            name: "splash".to_string(),
         },
     );
     for z in 0..20 {
@@ -539,6 +548,7 @@ fn ink_drop(device: Device, res: u32, dt: f32) {
             force_wall_separation: false,
             seperation_threshold: 0.0,
             reconstruction: None,
+            name: "ink_drop".to_string(),
         },
     );
     sim.log_volume = false;
@@ -613,6 +623,7 @@ fn vortex(device: Device, res: u32, dt: f32) {
             force_wall_separation: false,
             seperation_threshold: 0.0,
             reconstruction: None,
+            name: "vortex".to_string(),
         },
     );
     sim.log_volume = false;
@@ -699,6 +710,7 @@ fn vortex_sheet(device: Device, res: u32, dt: f32) {
             force_wall_separation: false,
             seperation_threshold: 0.0,
             reconstruction: None,
+            name: "vortex_sheet".to_string(),
         },
     );
     sim.log_volume = false;
@@ -777,6 +789,7 @@ fn mixed_density(device: Device, res: u32, dt: f32) {
             force_wall_separation: false,
             seperation_threshold: 0.0,
             reconstruction: None,
+            name: "mixed_density".to_string(),
         },
     );
     let mut color_particles = vec![];
@@ -857,6 +870,7 @@ fn launch_viewer_for_sim_with_tags(sim: &mut Simulation, count: usize) {
         }
         sim.step();
     }
+    sim.save_replay("replays/");
     unsafe {
         cpp_extra::destroy_viewer(viewer);
     }
@@ -891,6 +905,7 @@ fn launch_viewer_for_sim(sim: &mut Simulation) {
         }
         sim.step();
     }
+    sim.save_replay("replays/");
     unsafe {
         cpp_extra::destroy_viewer(viewer);
     }
@@ -903,8 +918,8 @@ fn main() {
     // vortex(device, 128, 1.0 / 30.0);
     // vortex_sheet(device, 128, 0.003);
     // mixed_density(device, 256, 0.01);
-    // dambreak(device, 32, 1.0 / 30.0);
-    dambreak_with_bunny(device, 40, 1.0 / 60.0);
+    dambreak(device, 32, 1.0 / 30.0);
+    // dambreak_with_bunny(device, 40, 1.0 / 60.0);
     // dambreak_with_ramp(device, 40, 1.0 / 60.0);
     // wave(device, 64, 1.0 / 30.0);
     // ink_drop(device, 64, 1.0 / 30.0);

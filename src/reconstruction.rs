@@ -313,7 +313,7 @@ impl AnisotropicDiffusion {
             let nx = self.phi.res[0];
             let ny = self.phi.res[1];
             let nz = self.phi.res[2];
-            dbg!(self.phi.res);
+            // dbg!(self.phi.res);
             cpp_extra::save_reconstructed_mesh(
                 nx,
                 ny,
