@@ -14,3 +14,6 @@ cargo run --release --bin replay -- scene
 # surface reconstruction from replay
 cargo run --release --bin recon -- scene grid_res raidus [frame start] [frame end] [frame step]
 ```
+
+## Known Issue
+Frame rate of screen capture can be inconsistent. Possibly due to CFL condition, etc.
