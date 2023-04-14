@@ -275,7 +275,9 @@ impl Grid<f32> {
         if self.dimension == 2 {
             let p = (p - make_float3(self.origin[0], self.origin[1], 0.0)) / self.dx;
             let ip = p.floor().int();
+
             let offset = p - ip.float();
+
             let v00 = self.at_index_clamped(ip.uint());
             let v01 = self.at_index_clamped(ip.uint() + make_uint3(1, 0, 0));
             let v10 = self.at_index_clamped(ip.uint() + make_uint3(0, 1, 0));

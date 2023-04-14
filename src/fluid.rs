@@ -422,7 +422,6 @@ impl Simulation {
             let u = self.u.interpolate(p);
             let v = self.v.interpolate(p);
             let w = self.w.interpolate(p);
-            cpu_dbg!(make_float3(u, v, w));
             make_float3(u, v, w)
         }
     }
@@ -576,7 +575,8 @@ impl Simulation {
                     let i = dispatch_id().x();
                     let particles = self.particles.as_ref().unwrap();
                     let pt = particles.var().read(i);
-                    let new_pos = pt.pos() + pt.vel() * dt;
+                    // let new_pos = pt.pos() + pt.vel() * dt;
+                    let new_pos = self.integrate_velocity(pt.pos(), dt, self.settings.advect);
                     let lo = Float3Expr::zero();
                     let hi =
                         (make_uint3(self.res[0], self.res[1], self.res[2]) - 1).float() * self.h();
@@ -1125,6 +1125,11 @@ impl Simulation {
     }
 
     pub fn advect_particle(&self, dt: f32) {
+        self.advect_particle_kernel
+            .as_ref()
+            .unwrap()
+            .dispatch([self.particles_vec.len() as u32, 1, 1], &dt)
+            .unwrap();
         self.zero_kernel
             .dispatch([self.u.values.len() as u32, 1, 1], &self.u.values)
             .unwrap();
@@ -1133,11 +1138,6 @@ impl Simulation {
             .unwrap();
         self.zero_kernel
             .dispatch([self.w.values.len() as u32, 1, 1], &self.w.values)
-            .unwrap();
-        self.advect_particle_kernel
-            .as_ref()
-            .unwrap()
-            .dispatch([self.particles_vec.len() as u32, 1, 1], &dt)
             .unwrap();
     }
     pub fn apply_ext_forces(&self, dt: f32) {
@@ -1329,6 +1329,7 @@ impl Simulation {
             profile("transfer_grid_to_particles", || {
                 self.transfer_grid_to_particles();
             });
+
             cur += dt;
         }
         self.frame += 1;

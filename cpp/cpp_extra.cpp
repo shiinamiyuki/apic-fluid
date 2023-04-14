@@ -7,21 +7,8 @@
 #include <igl/png/writePNG.h>
 #include <igl/png/readPNG.h>
 #include <igl/marching_cubes.h>
-#include "pcg_solver.h"
+// #include "pcg_solver.h"
 
-// Eigen::MatrixXd V;
-// Eigen::MatrixXi F;
-
-// int main(int argc, char *argv[])
-// {
-//   // Load a mesh in OFF format
-//   igl::readOFF(TUTORIAL_SHARED_PATH "/bunny.off", V, F);
-
-//   // Plot the mesh
-//   igl::opengl::glfw::Viewer viewer;
-//   viewer.data().set_mesh(V, F);
-//   viewer.launch();
-// }
 const int MODE_FREESURFACE = 0;
 const int MODE_TAGGED = 1;
 struct Viewer
@@ -222,52 +209,52 @@ extern "C"
         delete viewer;
     }
     // solve N x N linear system with a given stencil
-    void bridson_pcg_solve(int nx, int ny, int nz, const float *stencil, const int *offsets, int noffsets, const float *b, float *out)
-    {
-        auto N = nx * ny * nz;
-        robertbridson::PCGSolver<scalar> solver;
-        robertbridson::SparseMatrix<scalar> matrix(N);
-        std::vector<float> rhs(N), pressure(N);
-        std::memcpy(rhs.data(), b, sizeof(float) * N);
-        for (int z = 0; z < nz; ++z)
-        {
-            for (int y = 0; y < ny; ++y)
-            {
-                for (int x = 0; x < nx; ++x)
-                {
-                    int i = x + y * nx + z * nx * ny;
-                    // printf("%f\n", stencil[0]);
-                    // triplets.push_back(Eigen::Triplet<float>(i, i, stencil[i * noffsets]));
-                    matrix.add_to_element(i, i, stencil[i * noffsets]);
-                    for (int j = 1; j < noffsets; ++j)
-                    {
-                        auto off_x = offsets[j * 3 + 0];
-                        auto off_y = offsets[j * 3 + 1];
-                        auto off_z = offsets[j * 3 + 2];
-                        // fprintf(stderr, "off_x: %d, off_y: %d, off_z: %d\n", off_x, off_y, off_z);
-                        int idx = i + off_x + off_y * nx + off_z * nx * ny;
-                        if (x + off_x >= 0 && x + off_x < nx &&
-                            y + off_y >= 0 && y + off_y < ny &&
-                            z + off_z >= 0 && z + off_z < nz)
-                        {
-                            // triplets.push_back(Eigen::Triplet<float>(i, idx, stencil[i * noffsets + j]));
-                            matrix.add_to_element(i, idx, stencil[i * noffsets + j]);
-                        }
-                    }
-                }
-            }
-        }
-        scalar residual;
-        solver.set_solver_parameters(1e-5, 1024, 0.97, 0.25);
-        int iterations;
-        bool success = solver.solve(matrix, rhs, pressure, residual, iterations);
-        if (!success)
-        {
-            std::cout << "WARNING: Pressure solve failed! residual = " << residual << ", iters = " << iterations << std::endl;
-        }
-        std::cout << "solve finished in " << iterations << " iterations" << std::endl;
-        std::memcpy(out, pressure.data(), sizeof(float) * N);
-    }
+    // void bridson_pcg_solve(int nx, int ny, int nz, const float *stencil, const int *offsets, int noffsets, const float *b, float *out)
+    // {
+    //     auto N = nx * ny * nz;
+    //     robertbridson::PCGSolver<scalar> solver;
+    //     robertbridson::SparseMatrix<scalar> matrix(N);
+    //     std::vector<float> rhs(N), pressure(N);
+    //     std::memcpy(rhs.data(), b, sizeof(float) * N);
+    //     for (int z = 0; z < nz; ++z)
+    //     {
+    //         for (int y = 0; y < ny; ++y)
+    //         {
+    //             for (int x = 0; x < nx; ++x)
+    //             {
+    //                 int i = x + y * nx + z * nx * ny;
+    //                 // printf("%f\n", stencil[0]);
+    //                 // triplets.push_back(Eigen::Triplet<float>(i, i, stencil[i * noffsets]));
+    //                 matrix.add_to_element(i, i, stencil[i * noffsets]);
+    //                 for (int j = 1; j < noffsets; ++j)
+    //                 {
+    //                     auto off_x = offsets[j * 3 + 0];
+    //                     auto off_y = offsets[j * 3 + 1];
+    //                     auto off_z = offsets[j * 3 + 2];
+    //                     // fprintf(stderr, "off_x: %d, off_y: %d, off_z: %d\n", off_x, off_y, off_z);
+    //                     int idx = i + off_x + off_y * nx + off_z * nx * ny;
+    //                     if (x + off_x >= 0 && x + off_x < nx &&
+    //                         y + off_y >= 0 && y + off_y < ny &&
+    //                         z + off_z >= 0 && z + off_z < nz)
+    //                     {
+    //                         // triplets.push_back(Eigen::Triplet<float>(i, idx, stencil[i * noffsets + j]));
+    //                         matrix.add_to_element(i, idx, stencil[i * noffsets + j]);
+    //                     }
+    //                 }
+    //             }
+    //         }
+    //     }
+    //     scalar residual;
+    //     solver.set_solver_parameters(1e-5, 1024, 0.97, 0.25);
+    //     int iterations;
+    //     bool success = solver.solve(matrix, rhs, pressure, residual, iterations);
+    //     if (!success)
+    //     {
+    //         std::cout << "WARNING: Pressure solve failed! residual = " << residual << ", iters = " << iterations << std::endl;
+    //     }
+    //     std::cout << "solve finished in " << iterations << " iterations" << std::endl;
+    //     std::memcpy(out, pressure.data(), sizeof(float) * N);
+    // }
     void compute_G(const float *A_, uint32_t N, float h, float *G_, float *G_norm)
     {
         Eigen::Map<const Eigen::Matrix3f> A(A_);

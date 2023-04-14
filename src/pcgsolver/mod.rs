@@ -359,41 +359,41 @@ extern "C" {
         out: *mut f32,
     );
 }
-#[link(name = "cpp_extra")]
-extern "C" {
-    pub fn bridson_pcg_solve(
-        nx: i32,
-        ny: i32,
-        nz: i32,
-        stencil: *const f32,
-        offsets: *const i32,
-        noffsets: i32,
-        b: *const f32,
-        out: *mut f32,
-    );
-}
-pub fn bridson_solve(stencil: &Stencil, b: &Buffer<f32>, out: &Buffer<f32>) {
-    assert_eq!(stencil.n[0] * stencil.n[1] * stencil.n[2], b.len() as u32);
-    assert_eq!(stencil.n[0] * stencil.n[1] * stencil.n[2], out.len() as u32);
-    let coeff = stencil.coeff.copy_to_vec();
-    let offsets = stencil.offsets.copy_to_vec();
-    let offsets = offsets.iter().map(|x| [x.x, x.y, x.z]).collect::<Vec<_>>();
-    let b = b.copy_to_vec();
-    let mut out_ = out.copy_to_vec();
-    unsafe {
-        bridson_pcg_solve(
-            stencil.n[0] as i32,
-            stencil.n[1] as i32,
-            stencil.n[2] as i32,
-            coeff.as_ptr(),
-            offsets.as_ptr() as *const i32,
-            offsets.len() as i32,
-            b.as_ptr(),
-            out_.as_mut_ptr() as *mut f32,
-        );
-    }
-    out.copy_from(&out_);
-}
+// #[link(name = "cpp_extra")]
+// extern "C" {
+//     pub fn bridson_pcg_solve(
+//         nx: i32,
+//         ny: i32,
+//         nz: i32,
+//         stencil: *const f32,
+//         offsets: *const i32,
+//         noffsets: i32,
+//         b: *const f32,
+//         out: *mut f32,
+//     );
+// }
+// pub fn bridson_solve(stencil: &Stencil, b: &Buffer<f32>, out: &Buffer<f32>) {
+//     assert_eq!(stencil.n[0] * stencil.n[1] * stencil.n[2], b.len() as u32);
+//     assert_eq!(stencil.n[0] * stencil.n[1] * stencil.n[2], out.len() as u32);
+//     let coeff = stencil.coeff.copy_to_vec();
+//     let offsets = stencil.offsets.copy_to_vec();
+//     let offsets = offsets.iter().map(|x| [x.x, x.y, x.z]).collect::<Vec<_>>();
+//     let b = b.copy_to_vec();
+//     let mut out_ = out.copy_to_vec();
+//     unsafe {
+//         bridson_pcg_solve(
+//             stencil.n[0] as i32,
+//             stencil.n[1] as i32,
+//             stencil.n[2] as i32,
+//             coeff.as_ptr(),
+//             offsets.as_ptr() as *const i32,
+//             offsets.len() as i32,
+//             b.as_ptr(),
+//             out_.as_mut_ptr() as *mut f32,
+//         );
+//     }
+//     out.copy_from(&out_);
+// }
 
 pub fn eigen_solve(stencil: &Stencil, b: &Buffer<f32>, out: &Buffer<f32>) {
     assert_eq!(stencil.n[0] * stencil.n[1] * stencil.n[2], b.len() as u32);

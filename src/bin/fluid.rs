@@ -74,7 +74,7 @@ fn dambreak(device: Device, res: u32, dt: f32) {
             h,
             g: 0.5,
             dimension: 3,
-            transfer: ParticleTransfer::Apic,
+            transfer: ParticleTransfer::Flip,
             advect: VelocityIntegration::Euler,
             preconditioner: Preconditioner::DiagJacobi,
             force_wall_separation: true,
@@ -835,7 +835,7 @@ fn vortex_sheet(device: Device, res: u32, dt: f32) {
             g: 0.0,
             dimension: 2,
             transfer: ParticleTransfer::Apic,
-            advect: VelocityIntegration::Euler,
+            advect: VelocityIntegration::RK3,
             preconditioner: Preconditioner::DiagJacobi,
             force_wall_separation: false,
             seperation_threshold: 0.0,
@@ -1046,11 +1046,11 @@ fn main() {
     let ctx = Context::new(current_exe().unwrap());
     let device = ctx.create_cpu_device().unwrap();
     // vortex(device, 128, 1.0 / 30.0);
-    // vortex_sheet(device, 128, 0.003);
+    // vortex_sheet(device, 128, 1.0/30.0);
     // mixed_density(device, 256, 0.01);
-    // dambreak(device, 64, 1.0 / 60.0);
+    dambreak(device, 32, 1.0 / 60.0);
     // dambreak_with_bunny(device, 64, 1.0 / 60.0);
-    wash_bunny(device, 64, 1.0 / 60.0);
+    // wash_bunny(device, 64, 1.0 / 60.0);
     // dambreak_with_ramp(device, 40, 1.0 / 60.0);
     // wave(device, 64, 1.0 / 30.0);
     // ink_drop(device, 64, 1.0 / 30.0);
