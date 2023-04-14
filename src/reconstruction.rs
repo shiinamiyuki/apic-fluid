@@ -304,10 +304,10 @@ impl AnisotropicDiffusion {
             .unwrap();
         self.phi.values.copy_to_vec()
     }
-    pub fn save_obj(&self, particles: &Buffer<Particle>, frame: usize, name: &str) {
+    pub fn save_obj(&self, particles: &Buffer<Particle>, frame:usize, name: &str) {
         let S = self.build_scalar_field(particles);
         // dbg!(&S);
-        let path = format!("output_meshes/{}_{}.obj", name, frame);
+        let path = format!("{}_{}.obj", name, frame);
         let path = CString::new(path).unwrap();
         unsafe {
             let nx = self.phi.res[0];

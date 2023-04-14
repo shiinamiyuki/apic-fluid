@@ -1,14 +1,13 @@
 use std::{env::args, ffi::c_void, io::Read, time::Duration};
 
 use apic_fluid::{fluid::Replay, *};
+use luisa::init_logger;
 
 fn main() {
+    init_logger();
     let scene = args().nth(1).unwrap();
     let file = format!("replays/{}", scene);
-    let mut file = std::fs::File::open(file).unwrap();
-    let mut buf = Vec::new();
-    file.read_to_end(&mut buf).unwrap();
-    let replay: Replay = bson::from_slice(&buf).unwrap();
+    let replay = Replay::load(&file);
     launch_viewer(&replay);
 }
 
@@ -30,7 +29,7 @@ fn launch_viewer(replay: &Replay) {
     unsafe { cpp_extra::viewer_set_tags(viewer, tags.as_ptr()) }
     let mut frame = 0;
     while !viewer_thread.is_finished() {
-        let buf = &replay.frames[frame];
+        let buf = &replay.frames[frame % replay.frames.len()];
         unsafe {
             for i in 0..count {
                 particle_pos[3 * i + 0] = buf[i].pos[0];
@@ -44,7 +43,7 @@ fn launch_viewer(replay: &Replay) {
             cpp_extra::viewer_set_points(viewer, particle_pos.as_ptr(), particle_vel.as_ptr());
         }
         frame += 1;
-        std::thread::sleep(Duration::from_secs_f64(replay.dt as f64));
+        std::thread::sleep(Duration::from_secs_f64(replay.config.dt as f64));
     }
 
     unsafe {

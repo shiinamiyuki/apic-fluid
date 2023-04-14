@@ -271,9 +271,9 @@ fn dambreak_with_bunny(device: Device, res: u32, dt: f32) {
                 let y = y as f32 * 0.02;
                 let z = z as f32 * 0.02;
 
-                let x = x + (rng.gen::<f32>() - 0.5) * 0.01;
-                let y = y + (rng.gen::<f32>() - 0.5) * 0.01;
-                let z = z + (rng.gen::<f32>() - 0.5) * 0.01;
+                let x = x + 2.0 * (rng.gen::<f32>() - 0.5) * 0.01;
+                let y = y + 2.0 * (rng.gen::<f32>() - 0.5) * 0.01;
+                let z = z + 2.0 * (rng.gen::<f32>() - 0.5) * 0.01;
                 sim.particles_vec.push(Particle {
                     pos: Float3::new(x, y, z),
                     vel: Float3::new(0.0, 0.0, 0.0),
@@ -333,6 +333,133 @@ fn dambreak_with_bunny(device: Device, res: u32, dt: f32) {
             .unwrap();
         sim.set_mesh(vertices, faces);
     }
+    sim.enable_recording();
+    sim.commit();
+    let viewer_thread = {
+        let viewer = viewer as u64;
+        std::thread::spawn(move || unsafe {
+            let viewer = viewer as *mut c_void;
+            cpp_extra::launch_viewer(viewer);
+        })
+    };
+    let mut buf = sim.particles_vec.clone();
+    let mut particle_pos = vec![0.0f32; buf.len() * 3];
+    let mut particle_vel = vec![0.0f32; buf.len() * 3];
+    while !viewer_thread.is_finished() {
+        unsafe {
+            sim.particles.as_ref().unwrap().copy_to(&mut buf);
+            for i in 0..buf.len() {
+                particle_pos[3 * i + 0] = buf[i].pos.x;
+                particle_pos[3 * i + 1] = buf[i].pos.y;
+                particle_pos[3 * i + 2] = buf[i].pos.z;
+
+                particle_vel[3 * i + 0] = buf[i].vel.x;
+                particle_vel[3 * i + 1] = buf[i].vel.y;
+                particle_vel[3 * i + 2] = buf[i].vel.z;
+            }
+            cpp_extra::viewer_set_points(viewer, particle_pos.as_ptr(), particle_vel.as_ptr());
+        }
+        sim.step();
+    }
+    sim.save_replay("replays/");
+    unsafe {
+        cpp_extra::destroy_viewer(viewer);
+    }
+}
+fn wash_bunny(device: Device, res: u32, dt: f32) {
+    init_logger();
+    let extent = 2.0;
+    let h = extent / res as f32;
+    let mut sim = Simulation::new(
+        device.clone(),
+        SimulationSettings {
+            dt,
+            max_iterations: 1024,
+            tolerance: 1e-5,
+            res: [res, res, res * 2],
+            h,
+            g: 0.5,
+            dimension: 3,
+            transfer: ParticleTransfer::Apic,
+            advect: VelocityIntegration::Euler,
+            preconditioner: Preconditioner::DiagJacobi,
+            force_wall_separation: true,
+            seperation_threshold: 0.0,
+            reconstruction: None,
+            name: "wash_bunny".to_string(),
+        },
+    );
+    let mut rng = StdRng::seed_from_u64(0);
+    for z in 0..60 {
+        for y in 0..60 {
+            for x in 0..100 {
+                let x = x as f32 * 0.02;
+                let y = y as f32 * 0.02;
+                let z = z as f32 * 0.02;
+
+                let x = x + 2.0 * (rng.gen::<f32>() - 0.5) * 0.01;
+                let y = y + 2.0 * (rng.gen::<f32>() - 0.5) * 0.01;
+                let z = z + 2.0 * (rng.gen::<f32>() - 0.5) * 0.01;
+                sim.particles_vec.push(Particle {
+                    pos: Float3::new(x, y, z),
+                    vel: Float3::new(0.0, 0.0, 1.0),
+                    radius: h * 0.5 * (3.0f32).sqrt(),
+                    c_x: Float3::new(0.0, 0.0, 0.0),
+                    c_y: Float3::new(0.0, 0.0, 0.0),
+                    c_z: Float3::new(0.0, 0.0, 0.0),
+                    tag: 0,
+                    density: 1.0,
+                })
+            }
+        }
+    }
+    let viewer = unsafe { cpp_extra::create_viewer(sim.particles_vec.len()) };
+    unsafe {
+        let mut nV = 0i32;
+        let mut nF = 0i32;
+        let path = CString::new("data/bunny.obj").unwrap();
+        let s = 7.0f32;
+        let translate_scale = [1.0, -0.3, 3.0, s, s, s];
+        if !cpp_extra::viewer_load_mesh(
+            viewer,
+            path.as_c_str().as_ptr(),
+            translate_scale.as_ptr(),
+            &mut nV,
+            &mut nF,
+        ) {
+            panic!("failed to load mesh");
+        }
+        let mut vertices = vec![0.0f64; nV as usize * 3];
+        let mut faces = vec![0i32; nF as usize * 3];
+        std::ptr::copy_nonoverlapping(
+            cpp_extra::viewer_mesh_vertices(viewer),
+            vertices.as_mut_ptr(),
+            nV as usize * 3,
+        );
+        std::ptr::copy_nonoverlapping(
+            cpp_extra::viewer_mesh_faces(viewer),
+            faces.as_mut_ptr(),
+            nF as usize * 3,
+        );
+        let vertices = vertices.into_iter().map(|x| x as f32).collect::<Vec<_>>();
+        let faces = faces.into_iter().map(|x| x as u32).collect::<Vec<_>>();
+        let vertices = device
+            .create_buffer_from_fn(nV as usize, |i| {
+                Float3::new(
+                    vertices[3 * i + 0],
+                    vertices[3 * i + 1],
+                    vertices[3 * i + 2],
+                )
+            })
+            .unwrap();
+        let faces = device
+            .create_buffer_from_fn(nF as usize, |i| {
+                Uint3::new(faces[3 * i + 0], faces[3 * i + 1], faces[3 * i + 2])
+            })
+            .unwrap();
+        sim.set_mesh(vertices, faces);
+    }
+    sim.enable_recording();
     sim.commit();
     let viewer_thread = {
         let viewer = viewer as u64;
@@ -478,12 +605,13 @@ fn splash(device: Device, res: u32, dt: f32) {
             preconditioner: Preconditioner::DiagJacobi,
             force_wall_separation: false,
             seperation_threshold: 0.0,
-            reconstruction: Some(Reconstruction {
-                save_every: 4,
-                res: [50, 50, 50],
-                h: 2.0 * extent / 50.0,
-                r: 0.03,
-            }),
+            // reconstruction: Some(Reconstruction {
+            //     save_every: 4,
+            //     res: [50, 50, 50],
+            //     h: 2.0 * extent / 50.0,
+            //     r: 0.03,
+            // }),
+            reconstruction: None,
             name: "splash".to_string(),
         },
     );
@@ -526,7 +654,9 @@ fn splash(device: Device, res: u32, dt: f32) {
             }
         }
     }
+    sim.enable_recording();
     sim.commit();
+
     launch_viewer_for_sim(&mut sim);
 }
 fn ink_drop(device: Device, res: u32, dt: f32) {
@@ -918,8 +1048,9 @@ fn main() {
     // vortex(device, 128, 1.0 / 30.0);
     // vortex_sheet(device, 128, 0.003);
     // mixed_density(device, 256, 0.01);
-    dambreak(device, 32, 1.0 / 30.0);
-    // dambreak_with_bunny(device, 40, 1.0 / 60.0);
+    // dambreak(device, 64, 1.0 / 60.0);
+    // dambreak_with_bunny(device, 64, 1.0 / 60.0);
+    wash_bunny(device, 64, 1.0 / 60.0);
     // dambreak_with_ramp(device, 40, 1.0 / 60.0);
     // wave(device, 64, 1.0 / 30.0);
     // ink_drop(device, 64, 1.0 / 30.0);

@@ -1,4 +1,4 @@
-use std::io::Write;
+use std::io::{Read, Write};
 
 use luisa::{
     glam::Vec3,
@@ -22,13 +22,71 @@ pub struct ParticleData {
 }
 
 #[derive(Clone, Default, Debug, Serialize, Deserialize)]
+pub struct ReplayConfig {
+    pub dt: f32,
+    pub frame_count: usize,
+    pub particle_count: usize,
+    pub res: [u32; 3],
+    pub h: f32,
+}
 pub struct Replay {
-    pub dt:f32,
+    pub config: ReplayConfig,
     pub frames: Vec<Vec<ParticleData>>,
 }
 impl Replay {
-    pub fn new(dt:f32,) -> Self {
-        Self { dt, frames: Vec::new() }
+    pub fn new(res: [u32; 3], h: f32, dt: f32) -> Self {
+        Self {
+            config: ReplayConfig {
+                dt,
+                res,
+                h,
+                frame_count: 0,
+                particle_count: 0,
+            },
+            frames: Vec::new(),
+        }
+    }
+    pub fn load(path: &str) -> Self {
+        let config_file = format!("{}.config", path);
+        let config: ReplayConfig =
+            serde_json::from_str(&std::fs::read_to_string(config_file).unwrap()).unwrap();
+        let data_file = format!("{}.data", path);
+        let mut file = std::fs::File::open(data_file).unwrap();
+        let mut frames = Vec::with_capacity(config.frame_count);
+        for _ in 0..config.frame_count {
+            let mut frame = Vec::with_capacity(config.particle_count);
+            unsafe {
+                frame.set_len(config.particle_count);
+                let bytes = frame.as_mut_ptr() as *mut u8;
+                let bytes = std::slice::from_raw_parts_mut(
+                    bytes,
+                    frame.len() * std::mem::size_of::<ParticleData>(),
+                );
+                file.read_exact(bytes).unwrap();
+            }
+            frames.push(frame);
+        }
+        Self { config, frames }
+    }
+    pub fn save(&self, path: &str) {
+        let config_file = format!("{}.config", path);
+        // let mut file = std::fs::File::create(config_file).unwrap();
+        // let doc = bson::to_document(&self.config).unwrap();
+        // doc.to_writer(&mut file).unwrap();
+        let json = serde_json::to_string(&self.config).unwrap();
+        std::fs::write(config_file, json).unwrap();
+        let data_file = format!("{}.data", path);
+        let mut file = std::fs::File::create(data_file).unwrap();
+        for frame in &self.frames {
+            unsafe {
+                let bytes = frame.as_ptr() as *const u8;
+                let bytes = std::slice::from_raw_parts(
+                    bytes,
+                    frame.len() * std::mem::size_of::<ParticleData>(),
+                );
+                file.write_all(bytes).unwrap();
+            }
+        }
     }
 }
 #[derive(Clone, Copy, Value, Default, Debug)]
@@ -311,7 +369,7 @@ impl Simulation {
         }
     }
     pub fn enable_recording(&mut self) {
-        self.replay = Some(Replay::new(self.settings.dt));
+        self.replay = Some(Replay::new(self.res, self.settings.h, self.settings.dt));
     }
     pub fn set_mesh(&mut self, vertices: Buffer<Float3>, faces: Buffer<Uint3>) {
         let mesh = self
@@ -1299,14 +1357,13 @@ impl Simulation {
             rp.frames.push(data);
         }
     }
-    pub fn save_replay(&self, path: &str) {
-        if let Some(rp) = &self.replay {
-            let data = bson::to_vec(&rp).unwrap();
+    pub fn save_replay(&mut self, path: &str) {
+        if let Some(rp) = &mut self.replay {
+            rp.config.frame_count = rp.frames.len();
+            rp.config.particle_count = rp.frames[0].len();
             let path = format!("{}/{}", path, self.settings.name);
             log::info!("saving replay to {}", path);
-            let mut file =
-                std::fs::File::create(&path).unwrap();
-            file.write_all(&data).unwrap();
+            rp.save(&path);
         }
     }
     // solve for (1 - theta) * cur_phi + theta * neighbor_phi = 0
