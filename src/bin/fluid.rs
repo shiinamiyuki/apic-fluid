@@ -90,7 +90,6 @@ fn dambreak(device: Device, res: u32, dt: f32) {
             name: "dambreak".to_string(),
         },
     );
-    sim.enable_recording();
     let mut rng = StdRng::seed_from_u64(0);
     for z in 0..60 {
         for y in 0..60 {
@@ -115,6 +114,7 @@ fn dambreak(device: Device, res: u32, dt: f32) {
             }
         }
     }
+    sim.enable_recording();
     sim.commit();
     launch_viewer_for_sim(&mut sim);
 }
@@ -210,6 +210,7 @@ fn dambreak_with_ramp(device: Device, res: u32, dt: f32) {
             .unwrap();
         sim.set_mesh(vertices, faces);
     }
+    sim.enable_recording();
     sim.commit();
     let viewer_thread = {
         let viewer = viewer as u64;
@@ -237,6 +238,7 @@ fn dambreak_with_ramp(device: Device, res: u32, dt: f32) {
         }
         sim.step();
     }
+    sim.save_replay("replays/");
     unsafe {
         cpp_extra::destroy_viewer(viewer);
     }
@@ -535,6 +537,7 @@ fn wave(device: Device, res: u32, dt: f32) {
             }
         }
     }
+    sim.enable_recording();
     sim.commit();
     launch_viewer_for_sim(&mut sim);
 }
@@ -731,6 +734,7 @@ fn ink_drop(device: Device, res: u32, dt: f32) {
     for p in &others {
         sim.particles_vec.push(*p);
     }
+    sim.enable_recording();
     sim.commit();
     launch_viewer_for_sim_with_tags(&mut sim, color_particles.len());
 }
@@ -819,6 +823,7 @@ fn vortex(device: Device, res: u32, dt: f32) {
     for p in &others {
         sim.particles_vec.push(*p);
     }
+    sim.enable_recording();
     sim.commit();
     launch_viewer_for_sim_with_tags(&mut sim, color_particles.len());
 }
