@@ -8,7 +8,7 @@ See [BUILD.md](https://github.com/LuisaGroup/LuisaCompute/blob/next/BUILD.md) fo
 ## Run
 ```bash
 # fluid simulator
-cargo run --release --bin fluid -- scene res dt
+cargo run --release --bin fluid -- scene
 # replay
 cargo run --release --bin replay -- scene
 # surface reconstruction from replay
