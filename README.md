@@ -2,7 +2,11 @@
 Final project for CS888 W2023 at UWaterloo
 
 ## Build
-See [BUILD.md](https://github.com/LuisaGroup/LuisaCompute/blob/next/BUILD.md) for more information.
+First glone this repo
+```base
+git clone --recursive https://github.com/shiinamiyuki/apic-fluid
+```
+See [BUILD.md](https://github.com/LuisaGroup/LuisaCompute/blob/next/BUILD.md) for more information. TL;DR, make sure `cmake`, `ninja`, `clang++` are in `PTATH` and Rust is installed.
 
 
 ## Run
