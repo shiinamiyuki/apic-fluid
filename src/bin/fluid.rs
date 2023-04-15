@@ -917,7 +917,7 @@ fn mixed_density(device: Device, res: u32, dt: f32) {
             dimension: 2,
             transfer: ParticleTransfer::Apic,
             advect: VelocityIntegration::Euler,
-            preconditioner: Preconditioner::IncompletePoisson,
+            preconditioner: Preconditioner::DiagJacobi,
             force_wall_separation: false,
             seperation_threshold: 0.0,
             reconstruction: None,
