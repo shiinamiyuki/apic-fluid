@@ -1,9 +1,10 @@
 #![allow(non_snake_case)]
 use std::{
-    env::current_exe,
+    env::{args, current_exe},
     ffi::{c_void, CString},
     mem::size_of,
     sync::{atomic::AtomicBool, Arc},
+    time::Duration,
 };
 
 use apic_fluid::{
@@ -39,9 +40,9 @@ fn test_solve() {
     );
     let mut buf = vec![];
     for i in 0..(n * n * n) {
-        buf.push(6.0 * 0.001);
+        buf.push(6.0);
         for _ in 0..6 {
-            buf.push(-1.0 * 0.001);
+            buf.push(-1.0);
         }
     }
     stencil.coeff.copy_from(&buf);
@@ -896,6 +897,7 @@ fn vortex_sheet(device: Device, res: u32, dt: f32) {
     for p in &others {
         sim.particles_vec.push(*p);
     }
+    sim.enable_recording();
     sim.commit();
     launch_viewer_for_sim_with_tags(&mut sim, color_particles.len());
 }
@@ -1045,16 +1047,19 @@ fn main() {
     // init_logger();
     let ctx = Context::new(current_exe().unwrap());
     let device = ctx.create_cpu_device().unwrap();
-    // vortex(device, 128, 1.0 / 30.0);
-    // vortex_sheet(device, 128, 1.0/30.0);
-    // mixed_density(device, 256, 0.01);
-    dambreak(device, 32, 1.0 / 60.0);
-    // dambreak_with_bunny(device, 64, 1.0 / 60.0);
-    // wash_bunny(device, 64, 1.0 / 60.0);
-    // dambreak_with_ramp(device, 40, 1.0 / 60.0);
-    // wave(device, 64, 1.0 / 30.0);
-    // ink_drop(device, 64, 1.0 / 30.0);
-    // splash(device, 40, 1.0 / 60.0);
-    // boundary(device, 64, 1.0 / 30.0);
-    // stability(device, 32, 1.0/30.0);
+    let scene = args().nth(1).unwrap_or("dambreak".to_string());
+    match scene.as_str() {
+        "vortex" => vortex(device, 128, 1.0 / 30.0),
+        "vortex_sheet" => vortex_sheet(device, 128, 0.003),
+        "mixed_density" => mixed_density(device, 256, 0.01),
+        "dambreak" => dambreak(device, 64, 1.0 / 60.0),
+        "dambreak_with_bunny" => dambreak_with_bunny(device, 64, 1.0 / 60.0),
+        "wash_bunny" => wash_bunny(device, 64, 1.0 / 60.0),
+        "dambreak_with_ramp" => dambreak_with_ramp(device, 40, 1.0 / 60.0),
+        "wave" => wave(device, 64, 1.0 / 30.0),
+        "ink_drop" => ink_drop(device, 64, 1.0 / 30.0),
+        "splash" => splash(device, 40, 1.0 / 60.0),
+        "boundary" => boundary(device, 64, 1.0 / 30.0),
+        _ => panic!("Unknown scene"),
+    }
 }

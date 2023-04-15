@@ -29,7 +29,7 @@ fn launch_viewer(replay: &Replay) {
     unsafe { cpp_extra::viewer_set_tags(viewer, tags.as_ptr()) }
     let mut frame = 0;
     while !viewer_thread.is_finished() {
-        let buf = &replay.frames[frame % replay.frames.len()];
+        let buf = &replay.frames[frame];
         unsafe {
             for i in 0..count {
                 particle_pos[3 * i + 0] = buf[i].pos[0];
@@ -43,6 +43,8 @@ fn launch_viewer(replay: &Replay) {
             cpp_extra::viewer_set_points(viewer, particle_pos.as_ptr(), particle_vel.as_ptr());
         }
         frame += 1;
+        println!("playing frame [{}/{}]", frame, replay.frames.len());
+        frame %= replay.frames.len();
         std::thread::sleep(Duration::from_secs_f64(replay.config.dt as f64));
     }
 
