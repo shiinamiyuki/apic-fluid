@@ -1058,6 +1058,7 @@ fn main() {
         "vortex_sheet" => vortex_sheet(device, 128, 0.003),
         "mixed_density" => mixed_density(device, 256, 0.01),
         "dambreak" => dambreak(device, 64, 1.0 / 60.0),
+        "dambreak_small" => dambreak(device, 32, 1.0 / 30.0),
         "dambreak_with_bunny" => dambreak_with_bunny(device, 64, 1.0 / 60.0),
         "wash_bunny" => wash_bunny(device, 64, 1.0 / 60.0),
         "dambreak_with_ramp" => dambreak_with_ramp(device, 40, 1.0 / 60.0),
@@ -1067,4 +1068,5 @@ fn main() {
         "boundary" => boundary(device, 64, 1.0 / 30.0),
         _ => panic!("Unknown scene"),
     }
+    generate_perf_report();
 }

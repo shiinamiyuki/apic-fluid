@@ -1,10 +1,15 @@
-use std::io::{Read, Write};
+use std::{
+    cell::RefCell,
+    collections::HashMap,
+    io::{Read, Write},
+};
 
 use luisa::{
     glam::Vec3,
     rtx::{Accel, Mesh},
     AccelBuildRequest, AccelOption,
 };
+use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -1612,9 +1617,36 @@ impl Simulation {
         .unwrap();
     }
 }
+use lazy_static::lazy_static;
+lazy_static! {
+    static ref TIMING: Mutex<HashMap<String, (f64, usize)>> = Mutex::new(HashMap::new());
+}
 pub(crate) fn profile(name: &str, f: impl FnOnce()) {
     let t0 = std::time::Instant::now();
     f();
     let elapsed = (std::time::Instant::now() - t0).as_millis();
     log::info!("[{}] finished in {}ms", name, elapsed);
+    let mut timing = TIMING.lock();
+    {
+        let mut entry = timing.entry(name.to_string()).or_insert((0.0, 0));
+        entry.0 += elapsed as f64;
+        entry.1 += 1;
+    }
+}
+
+pub fn generate_perf_report() {
+    let timing = TIMING.lock();
+    let mut timing: Vec<_> = timing.iter().collect();
+    let total = timing.iter().map(|(_, t)| t.0).sum::<f64>();
+    println!("Total time: {}ms", total);
+    timing.sort_by(|a, b| b.1 .0.partial_cmp(&a.1 .0).unwrap());
+    for (name, (time, cnt)) in timing {
+        println!(
+            "{:30}: {:10.3}ms avg: {:8.3}ms {:6.3}%",
+            name,
+            time,
+            time / *cnt as f64,
+            time / total * 100.0
+        );
+    }
 }
