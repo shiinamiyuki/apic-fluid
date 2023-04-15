@@ -234,19 +234,6 @@ pub enum VelocityIntegration {
 }
 
 impl Simulation {
-    fn stencil_offsets(&self, i: u32) -> Expr<Int3> {
-        let offset = make_int3(0, 1, -1);
-        match i {
-            0 => offset.xxx(),
-            1 => offset.yxx(),
-            2 => offset.zxx(),
-            3 => offset.xyx(),
-            4 => offset.xzx(),
-            5 => offset.xxy(),
-            6 => offset.xxz(),
-            _ => panic!("invalid stencil offset index"),
-        }
-    }
     pub fn new(device: Device, settings: SimulationSettings) -> Self {
         let res = settings.res;
         let dimension = settings.dimension;
@@ -1426,6 +1413,8 @@ impl Simulation {
         });
     }
     fn extrapolate_density_impl(&self) {
+        // Ok, I am a bit lazy on this
+        // I ignored race condition here
         let i = dispatch_id();
         let map = |density: &Grid<f32>| {
             if_!(!density.oob(i.int()), {
